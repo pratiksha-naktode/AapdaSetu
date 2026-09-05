@@ -2,20 +2,50 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
 import { EmergencyRequest, Responder } from '../../types';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
-import { Shield, AlertTriangle, Users, MapPin, CheckCircle, Navigation, Phone, ExternalLink } from 'lucide-react';
+import { Shield, AlertTriangle, Users, MapPin, CheckCircle, Navigation, Phone, ExternalLink, AlertOctagon, X, Send } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+
+const RESPONDER_ISSUE_TYPES = [
+  'Need additional responder',
+  'Need medical support',
+  'Need rescue equipment',
+  'Road blocked / Inaccessible',
+  'Unsafe location / Hazard',
+  'More people trapped than reported',
+  'Vehicle / Boat problem',
+  'Other'
+];
 
 export const ResponderDashboard: React.FC = () => {
   const { user } = useAuth();
   const [requests, setRequests] = useState<EmergencyRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [userCoords, setUserCoords] = useState<{ lat: number; lon: number } | null>(null);
+
+  // Issue reporting modal state
+  const [reportModalReq, setReportModalReq] = useState<EmergencyRequest | null>(null);
+  const [issueType, setIssueType] = useState<string>(RESPONDER_ISSUE_TYPES[0]);
+  const [issueDescription, setIssueDescription] = useState<string>('');
+  const [submittingReport, setSubmittingReport] = useState<boolean>(false);
+  const [reportSuccessMessage, setReportSuccessMessage] = useState<string | null>(null);
 
   // Active responder identity from authenticated session (with development fallback)
   const activeResponder = {
     id: (user?.role === 'RESPONDER' ? user?.id : null) || 'dev-responder-alpha',
     name: (user?.role === 'RESPONDER' ? user?.full_name : null) || 'NDRF Rescue Unit Alpha (Capt. Rajesh)'
   };
+
+  useEffect(() => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        pos => setUserCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => setUserCoords({ lat: 16.5449, lon: 81.5212 })
+      );
+    } else {
+      setUserCoords({ lat: 16.5449, lon: 81.5212 });
+    }
+  }, []);
 
   useEffect(() => {
     loadRequests();
@@ -55,6 +85,51 @@ export const ResponderDashboard: React.FC = () => {
       loadRequests();
     } catch (err: any) {
       alert('Failed to update status: ' + err.message);
+    }
+  };
+
+  const handleOpenReportModal = (req: EmergencyRequest) => {
+    setReportModalReq(req);
+    setIssueType(RESPONDER_ISSUE_TYPES[0]);
+    setIssueDescription('');
+    setReportSuccessMessage(null);
+  };
+
+  const handleCloseReportModal = () => {
+    setReportModalReq(null);
+    setReportSuccessMessage(null);
+  };
+
+  const handleSubmitReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportModalReq) return;
+
+    if (!issueDescription.trim()) {
+      alert('Please enter a brief description of the issue.');
+      return;
+    }
+
+    setSubmittingReport(true);
+    try {
+      await api.submitTaskReport(reportModalReq.id, {
+        reported_by_user_id: user?.id || activeResponder.id,
+        reporter_name: activeResponder.name,
+        reporter_role: 'RESPONDER',
+        issue_type: issueType,
+        description: issueDescription.trim(),
+        latitude: userCoords?.lat,
+        longitude: userCoords?.lon
+      });
+
+      setReportSuccessMessage('Issue reported to Disaster Command Center! Admin will review for escalation or backup assistance.');
+      setTimeout(() => {
+        handleCloseReportModal();
+        loadRequests();
+      }, 1800);
+    } catch (err: any) {
+      alert('Failed to report issue: ' + err.message);
+    } finally {
+      setSubmittingReport(false);
     }
   };
 
@@ -104,7 +179,10 @@ export const ResponderDashboard: React.FC = () => {
           </div>
         ) : (
           requests.map((req) => {
-            const isAssignedToMe = req.assigned_to?.id === activeResponder.id;
+            const isPrimaryAssigned = req.assigned_to?.id === activeResponder.id || (req as any).assigned_to_user_id === activeResponder.id;
+            const supportList = (req as any).support_assignments || [];
+            const isSupportAssigned = supportList.some((s: any) => s.user_id === activeResponder.id || s.id === activeResponder.id);
+            const isAssignedToMe = isPrimaryAssigned || isSupportAssigned;
             const isResolved = req.status === 'RESOLVED';
 
             return (
@@ -125,6 +203,16 @@ export const ResponderDashboard: React.FC = () => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
                       <PriorityBadge level={req.priority_level} score={req.priority_score} />
                       <StatusBadge status={req.status} />
+                      {isPrimaryAssigned && (
+                        <span style={{ fontSize: '0.72rem', background: '#dc2626', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: '4px', fontWeight: 800, textTransform: 'uppercase' }}>
+                          ★ PRIMARY RESPONDER
+                        </span>
+                      )}
+                      {isSupportAssigned && (
+                        <span style={{ fontSize: '0.72rem', background: '#0284c7', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: '4px', fontWeight: 800, textTransform: 'uppercase' }}>
+                          ★ SUPPORT RESPONDER
+                        </span>
+                      )}
                       <span style={{ fontSize: '0.72rem', background: '#3b82f6', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: 'var(--radius-sm)', fontWeight: 700, textTransform: 'uppercase' }}>
                         {req.request_type || 'EMERGENCY'}
                       </span>
@@ -220,6 +308,13 @@ export const ResponderDashboard: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Partner / Support Information */}
+                {supportList.length > 0 && (
+                  <div style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.25)', padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-sm)', margin: '0.5rem 0', fontSize: '0.8rem', color: '#93c5fd' }}>
+                    <strong>Active Backup / Partner Support:</strong> {supportList.map((s: any) => `${s.name} (${s.phone || 'Support'})`).join(', ')}
+                  </div>
+                )}
+
                 {/* Actions & Assignment Bar */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.85rem' }}>
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -287,6 +382,17 @@ export const ResponderDashboard: React.FC = () => {
                       </button>
                     )}
 
+                    {/* Report Issue / Need Help Button */}
+                    {isAssignedToMe && !isResolved && (
+                      <button
+                        onClick={() => handleOpenReportModal(req)}
+                        className="btn btn-outline"
+                        style={{ padding: '0.45rem 0.85rem', fontSize: '0.82rem', gap: '0.35rem', color: '#f59e0b', borderColor: '#f59e0b' }}
+                      >
+                        <AlertOctagon size={14} /> Report Issue / Need Help
+                      </button>
+                    )}
+
                     {!isResolved && (
                       <button
                         onClick={() => handleStatusChange(req.id, 'RESOLVED')}
@@ -303,6 +409,104 @@ export const ResponderDashboard: React.FC = () => {
           })
         )}
       </div>
+
+      {/* Task Issue / Help Request Modal */}
+      {reportModalReq && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1rem'
+        }}>
+          <div className="card" style={{ maxWidth: '520px', width: '100%', padding: '2rem', border: '1px solid #f59e0b', boxShadow: '0 20px 40px rgba(0,0,0,0.6)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f59e0b', fontWeight: 800 }}>
+                <AlertOctagon size={20} />
+                <span style={{ fontSize: '1.1rem' }}>Report Issue / Request Assistance</span>
+              </div>
+              <button
+                onClick={handleCloseReportModal}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {reportSuccessMessage ? (
+              <div style={{ padding: '1rem', background: 'rgba(34, 197, 94, 0.15)', border: '1px solid #22c55e', borderRadius: 'var(--radius-sm)', color: '#4ade80', textAlign: 'center', fontSize: '0.9rem' }}>
+                {reportSuccessMessage}
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitReport}>
+                <div style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>
+                    Task Reference
+                  </label>
+                  <div style={{ padding: '0.6rem 0.8rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+                    <strong>#{reportModalReq.id.slice(0, 8)}</strong> — {reportModalReq.category?.replace(/_/g, ' ')} ({reportModalReq.address})
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>
+                    Issue Classification
+                  </label>
+                  <select
+                    value={issueType}
+                    onChange={e => setIssueType(e.target.value)}
+                    className="form-input"
+                    style={{ width: '100%', padding: '0.6rem' }}
+                  >
+                    {RESPONDER_ISSUE_TYPES.map(type => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: '1.25rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>
+                    Detailed Description / Operational Situation
+                  </label>
+                  <textarea
+                    value={issueDescription}
+                    onChange={e => setIssueDescription(e.target.value)}
+                    placeholder="Describe the barrier, hazard, or reason support/reassignment is requested..."
+                    rows={3}
+                    className="form-input"
+                    style={{ width: '100%', padding: '0.6rem', resize: 'vertical' }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleCloseReportModal}
+                    className="btn btn-outline"
+                    style={{ padding: '0.5rem 1rem' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submittingReport}
+                    className="btn btn-primary"
+                    style={{ padding: '0.5rem 1.25rem', gap: '0.4rem', background: '#f59e0b', borderColor: '#d97706', color: '#000', fontWeight: 800 }}
+                  >
+                    <Send size={15} /> {submittingReport ? 'Submitting...' : 'Transmit Report'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

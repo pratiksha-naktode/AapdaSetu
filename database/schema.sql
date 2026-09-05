@@ -197,7 +197,39 @@ CREATE TABLE IF NOT EXISTS notifications (
     sent_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 12. Geospatial and Performance Indexes
+-- 12. Task Help / Issue Reports
+CREATE TABLE IF NOT EXISTS task_reports (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    request_id UUID REFERENCES emergency_requests(id) ON DELETE CASCADE,
+    reported_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    reporter_role user_role_enum NOT NULL,
+    issue_type VARCHAR(100) NOT NULL,
+    description TEXT NOT NULL,
+    latitude NUMERIC(10, 7),
+    longitude NUMERIC(10, 7),
+    status VARCHAR(50) DEFAULT 'OPEN', -- OPEN, ACKNOWLEDGED, RESOLVED
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    resolved_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- 13. Multiple Assignments (Primary + Support Volunteers & Responders)
+CREATE TABLE IF NOT EXISTS request_assignments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    request_id UUID REFERENCES emergency_requests(id) ON DELETE CASCADE,
+    assigned_to_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    assigned_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    assignment_role VARCHAR(20) DEFAULT 'PRIMARY', -- 'PRIMARY', 'SUPPORT'
+    status request_status_enum DEFAULT 'ASSIGNED',
+    assigned_at TIMESTAMPTZ DEFAULT NOW(),
+    accepted_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 14. Geospatial and Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_requests_location ON emergency_requests USING GIST (location);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON emergency_requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_priority ON emergency_requests(priority_level, priority_score DESC);
@@ -207,7 +239,13 @@ CREATE INDEX IF NOT EXISTS idx_volunteers_location ON volunteers USING GIST (cur
 CREATE INDEX IF NOT EXISTS idx_shelters_location ON shelters USING GIST (location);
 CREATE INDEX IF NOT EXISTS idx_hospitals_location ON hospitals USING GIST (location);
 CREATE INDEX IF NOT EXISTS idx_police_location ON police_stations USING GIST (location);
+CREATE INDEX IF NOT EXISTS idx_task_reports_request ON task_reports(request_id);
+CREATE INDEX IF NOT EXISTS idx_task_reports_status ON task_reports(status);
+CREATE INDEX IF NOT EXISTS idx_request_assignments_req ON request_assignments(request_id);
+CREATE INDEX IF NOT EXISTS idx_request_assignments_user ON request_assignments(assigned_to_user_id);
 
--- 13. Supabase Realtime Publication
+-- 15. Supabase Realtime Publication
 ALTER PUBLICATION supabase_realtime ADD TABLE emergency_requests;
 ALTER PUBLICATION supabase_realtime ADD TABLE request_status_history;
+ALTER PUBLICATION supabase_realtime ADD TABLE task_reports;
+ALTER PUBLICATION supabase_realtime ADD TABLE request_assignments;

@@ -154,5 +154,86 @@ export const api = {
 
   async triggerSync(): Promise<{ synced: number; failed: number }> {
     return syncOfflineQueue(API_BASE);
+  },
+
+  // Task Help / Issue Reporting
+  async submitTaskReport(requestId: string, data: {
+    reported_by_user_id?: string;
+    reporter_name: string;
+    reporter_role: string;
+    issue_type: string;
+    description: string;
+    latitude?: number;
+    longitude?: number;
+  }): Promise<any> {
+    const res = await fetch(`${API_BASE}/api/requests/${requestId}/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to submit task report');
+    }
+    return res.json();
+  },
+
+  async getTaskReports(status?: string): Promise<any[]> {
+    const query = status ? `?status=${status}` : '';
+    const res = await fetch(`${API_BASE}/api/reports/all${query}`);
+    if (!res.ok) throw new Error('Failed to fetch task reports');
+    const data = await res.json();
+    return data.reports || [];
+  },
+
+  async updateTaskReportStatus(reportId: string, status: string, resolvedBy?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/api/reports/${reportId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, resolved_by: resolvedBy })
+    });
+    if (!res.ok) throw new Error('Failed to update task report status');
+    return res.json();
+  },
+
+  // Multiple Personnel Assignment & Reassignment
+  async assignSupport(requestId: string, personnelId: string, role?: string, assignedBy?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/api/requests/${requestId}/assign-support`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personnel_id: personnelId, role: role || 'VOLUNTEER', assigned_by: assignedBy || 'Admin' })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to assign support personnel');
+    }
+    return res.json();
+  },
+
+  async reassignTask(requestId: string, personnelId: string, role?: string, reason?: string, assignedBy?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/api/requests/${requestId}/reassign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personnel_id: personnelId, role: role || 'VOLUNTEER', reason, assigned_by: assignedBy || 'Admin' })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to reassign task');
+    }
+    return res.json();
+  },
+
+  // Nearby Hospitals & Police Stations using Real GPS Coordinates
+  async getNearbyFacilities(latitude: number, longitude: number, radiusKm: number = 15): Promise<{ hospitals: any[]; police_stations: any[] }> {
+    const [hRes, pRes] = await Promise.all([
+      fetch(`${API_BASE}/api/facilities/nearby?type=hospitals&latitude=${latitude}&longitude=${longitude}&radius_km=${radiusKm}`),
+      fetch(`${API_BASE}/api/facilities/nearby?type=police_stations&latitude=${latitude}&longitude=${longitude}&radius_km=${radiusKm}`)
+    ]);
+    const hData = hRes.ok ? await hRes.json() : { facilities: [] };
+    const pData = pRes.ok ? await pRes.json() : { facilities: [] };
+    return {
+      hospitals: hData.facilities || [],
+      police_stations: pData.facilities || []
+    };
   }
 };

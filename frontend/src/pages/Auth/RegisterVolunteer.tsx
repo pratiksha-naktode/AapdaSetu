@@ -81,11 +81,14 @@ export const RegisterVolunteer: React.FC = () => {
         throw new Error(data.error || 'Failed to register volunteer account.');
       }
 
-      setSuccess('Volunteer profile registered successfully! Logging you in...');
-      await login(email.trim(), password, 'VOLUNTEER');
+      // Ensure no leftover active session exists
+      localStorage.removeItem('varahi_auth_token');
+      localStorage.removeItem('varahi_auth_user');
+
+      setSuccess('Volunteer profile registered successfully! Please log in to continue.');
       setTimeout(() => {
-        navigate('/volunteer', { replace: true });
-      }, 600);
+        navigate('/volunteer/login', { replace: true });
+      }, 1800);
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.');
     } finally {

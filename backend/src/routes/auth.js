@@ -17,10 +17,10 @@ router.post('/login', async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const user = await repository.getUserByEmail(normalizedEmail);
+  const { user, error } = await repository.authenticateUser(normalizedEmail, password);
 
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid credentials. User not found in system.' });
+  if (error || !user) {
+    return res.status(401).json({ error: 'Invalid email or password.' });
   }
 
   // Role validation: if user's actual role does not match expected role, reject login
@@ -38,7 +38,7 @@ router.post('/login', async (req, res) => {
     if (expectedTitle === 'Admin') {
       errorMessage = 'This account is not registered as an Admin.';
     } else {
-      errorMessage = `This account is not registered as a ${expectedTitle}. Please use ${actualTitle} Login.`;
+      errorMessage = `This account is not registered as a ${expectedTitle}.`;
     }
 
     return res.status(403).json({
@@ -78,12 +78,16 @@ router.post('/register/citizen', async (req, res) => {
       return res.status(400).json({ error: 'Passwords do not match.' });
     }
 
-    const user = await repository.registerCitizen({ full_name: finalName, email, phone });
+    const user = await repository.registerCitizen({ full_name: finalName, email, phone, password });
 
     return res.status(201).json({
-      message: 'Citizen registered successfully',
-      user,
-      token: `varahi-jwt-${user.id}`
+      message: 'Account created successfully! Please log in to continue.',
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role
+      }
     });
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -110,14 +114,19 @@ router.post('/register/volunteer', async (req, res) => {
       full_name: finalName,
       email,
       phone,
+      password,
       capabilities: Array.isArray(capabilities) ? capabilities : [],
       vehicle_type
     });
 
     return res.status(201).json({
-      message: 'Volunteer registered successfully',
-      user,
-      token: `varahi-jwt-${user.id}`
+      message: 'Volunteer registered successfully! Please log in to continue.',
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role
+      }
     });
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -144,14 +153,19 @@ router.post('/register/responder', async (req, res) => {
       full_name: finalName,
       email,
       phone,
+      password,
       responder_type: responder_type || 'RESCUE_TEAM',
       badge_number: badge_number || 'PENDING_VERIFICATION'
     });
 
     return res.status(201).json({
-      message: 'Responder registered successfully (Pending Control Room Verification)',
-      user,
-      token: `varahi-jwt-${user.id}`
+      message: 'Responder credentials submitted successfully! Please sign in to your unit portal.',
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role
+      }
     });
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -162,7 +176,8 @@ router.post('/register/responder', async (req, res) => {
  * POST /api/auth/register (Generic legacy fallback - disallows ADMIN)
  */
 router.post('/register', async (req, res) => {
-  const { email, full_name, phone, role } = req.body;
+  const { email, password, full_name, name, phone, role } = req.body;
+  const finalName = full_name || name;
 
   if (role && role.toUpperCase() === 'ADMIN') {
     return res.status(403).json({ error: 'Public admin registration is not permitted.' });
@@ -172,17 +187,21 @@ router.post('/register', async (req, res) => {
   try {
     let user;
     if (requestedRole === 'VOLUNTEER') {
-      user = await repository.registerVolunteer({ full_name, email, phone });
+      user = await repository.registerVolunteer({ full_name: finalName, email, phone, password });
     } else if (requestedRole === 'RESPONDER') {
-      user = await repository.registerResponder({ full_name, email, phone });
+      user = await repository.registerResponder({ full_name: finalName, email, phone, password });
     } else {
-      user = await repository.registerCitizen({ full_name, email, phone });
+      user = await repository.registerCitizen({ full_name: finalName, email, phone, password });
     }
 
     return res.status(201).json({
-      message: 'User registered successfully',
-      user,
-      token: `varahi-jwt-${user.id}`
+      message: 'User registered successfully. Please log in with your credentials.',
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role
+      }
     });
   } catch (err) {
     return res.status(400).json({ error: err.message });

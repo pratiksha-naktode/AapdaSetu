@@ -4,14 +4,23 @@ import { config } from '../config.js';
 import { 
   matchRequestCandidates, 
   determineRequiredResponderType, 
-  determineRequiredCapability 
+  determineRequiredCapability,
+  calculateDistanceKm,
+  findBestVolunteerForResourceRequest
 } from '../services/matchingService.js';
 
 let supabase = null;
+let supabaseAuth = null;
 if (config.supabase.url && (config.supabase.serviceRoleKey || config.supabase.anonKey)) {
   try {
-    const key = config.supabase.serviceRoleKey || config.supabase.anonKey;
-    supabase = createClient(config.supabase.url, key);
+    const serviceKey = config.supabase.serviceRoleKey || config.supabase.anonKey;
+    const anonKey = config.supabase.anonKey || config.supabase.serviceRoleKey;
+    supabase = createClient(config.supabase.url, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+    supabaseAuth = createClient(config.supabase.url, anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
     console.log('[Repository] Connected to Supabase PostgreSQL at:', config.supabase.url);
   } catch (err) {
     console.warn('[Repository] Failed to connect to Supabase, running local in-memory store:', err.message);
@@ -128,7 +137,9 @@ const memoryStore = {
     { id: 'p1', name: '1-Town Police Station Bhimavaram', latitude: 16.5480, longitude: 81.5285, control_room_number: '+918816221100' }
   ],
   requests: [],
-  statusHistory: []
+  statusHistory: [],
+  taskReports: [],
+  requestAssignments: []
 };
 
 export const repository = {
@@ -223,9 +234,23 @@ export const repository = {
       const pool = recType === 'VOLUNTEER' ? volunteers : responders;
       const matchResult = matchRequestCandidates(req, pool, activeMap);
 
+      const reqAssignments = memoryStore.requestAssignments.filter(a => a.request_id === req.id && a.status !== 'CANCELLED');
+      const supportList = reqAssignments.filter(a => a.assignment_role === 'SUPPORT').map(a => {
+        const found = responders.find(r => r.id === a.assigned_to_user_id || r.user_id === a.assigned_to_user_id)
+          || volunteers.find(v => v.id === a.assigned_to_user_id || v.user_id === a.assigned_to_user_id);
+        return {
+          ...a,
+          name: found ? (found.name || found.full_name) : 'Support Personnel',
+          phone: found ? found.phone : ''
+        };
+      });
+
       return {
         ...req,
         assigned_to: assignedTo || null,
+        support_assignments: supportList,
+        assignment_method: req.assignment_method || (assignedTo ? 'MANUAL_DISPATCH' : null),
+        assignment_explanation: req.assignment_explanation || null,
         matching: matchResult,
         recommended_responder: recType
       };
@@ -320,18 +345,52 @@ export const repository = {
       recommended_responder: data.recommended_responder || 'RESCUE_TEAM',
       status: 'PENDING',
       assigned_to: null,
+      assigned_to_user_id: null,
       assigned_responder_type: null,
+      assignment_method: null,
+      assignment_explanation: null,
       is_offline_captured: Boolean(data.is_offline_captured),
       synced_at: data.is_offline_captured ? new Date().toISOString() : null,
       created_at: data.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
 
+    // Automatic Nearest Volunteer Assignment for RESOURCE requests
+    let autoAssignedVolunteer = null;
+    if (newRequest.request_type === 'RESOURCE') {
+      const volunteers = await this.getVolunteers();
+      const activeMap = await this.getActiveAssignmentsMap();
+      const matchResult = findBestVolunteerForResourceRequest(newRequest, volunteers, activeMap);
+
+      if (matchResult.is_assigned && matchResult.volunteer) {
+        autoAssignedVolunteer = matchResult.volunteer;
+        newRequest.status = 'ASSIGNED';
+        newRequest.assigned_to_user_id = autoAssignedVolunteer.id;
+        newRequest.assigned_to = {
+          id: autoAssignedVolunteer.id,
+          name: autoAssignedVolunteer.name || autoAssignedVolunteer.full_name,
+          role: 'VOLUNTEER'
+        };
+        newRequest.assigned_responder_type = 'VOLUNTEER';
+        newRequest.assigned_at = new Date().toISOString();
+        newRequest.assignment_method = 'AUTO — NEAREST AVAILABLE VOLUNTEER';
+        newRequest.assignment_explanation = matchResult.explanation;
+        newRequest.volunteer_distance_km = matchResult.distance_km;
+        newRequest.volunteer_active_tasks = matchResult.active_tasks;
+      } else {
+        newRequest.status = 'PENDING';
+        newRequest.assignment_method = 'PENDING — NO AVAILABLE VOLUNTEER';
+        newRequest.assignment_explanation = matchResult.explanation;
+      }
+    }
+
     memoryStore.requests.unshift(newRequest);
 
     if (supabase) {
       try {
         const isCitizenUuid = typeof newRequest.citizen_id === 'string' && newRequest.citizen_id.length === 36 && newRequest.citizen_id.includes('-');
+        const isAssigneeUuid = typeof newRequest.assigned_to_user_id === 'string' && newRequest.assigned_to_user_id.length === 36 && newRequest.assigned_to_user_id.includes('-');
+
         const { data: dbData, error } = await supabase.from('emergency_requests').insert({
           id: newRequest.id,
           client_local_id: newRequest.client_local_id,
@@ -360,6 +419,8 @@ export const repository = {
           priority_reason: newRequest.priority_reason,
           recommended_responder: newRequest.recommended_responder,
           status: newRequest.status,
+          assigned_to_user_id: isAssigneeUuid ? newRequest.assigned_to_user_id : null,
+          assigned_at: newRequest.assigned_at || null,
           is_offline_captured: newRequest.is_offline_captured,
           synced_at: newRequest.synced_at
         }).select().maybeSingle();
@@ -373,6 +434,43 @@ export const repository = {
       } catch (dbErr) {
         console.warn('[Repository] Supabase insert failed, fallback stored in memory:', dbErr.message);
       }
+    }
+
+    // If auto-assigned, record in request_assignments and request_status_history
+    if (autoAssignedVolunteer) {
+      await this.recordAssignment({
+        request_id: newRequest.id,
+        assigned_to_user_id: autoAssignedVolunteer.id,
+        assignment_role: 'PRIMARY',
+        status: 'ASSIGNED',
+        assigned_by_user_id: null
+      });
+
+      if (supabase) {
+        const isUuid = autoAssignedVolunteer.id && autoAssignedVolunteer.id.length === 36 && autoAssignedVolunteer.id.includes('-');
+        try {
+          await supabase.from('request_status_history').insert({
+            request_id: newRequest.id,
+            previous_status: 'PENDING',
+            new_status: 'ASSIGNED',
+            changed_by_user_id: isUuid ? autoAssignedVolunteer.id : null,
+            notes: newRequest.assignment_explanation,
+            changed_at: newRequest.assigned_at
+          });
+        } catch (hErr) {
+          console.warn('[Repository] Supabase auto-assignment status history warning:', hErr.message);
+        }
+      }
+
+      memoryStore.statusHistory.unshift({
+        id: uuidv4(),
+        request_id: newRequest.id,
+        previous_status: 'PENDING',
+        new_status: 'ASSIGNED',
+        changed_by: 'Auto Volunteer Dispatch Engine',
+        notes: newRequest.assignment_explanation,
+        timestamp: newRequest.assigned_at
+      });
     }
 
     return { request: newRequest, isDuplicate: false };
@@ -555,6 +653,312 @@ export const repository = {
     return { request, success: true };
   },
 
+  async recordAssignment({ request_id, assigned_to_user_id, assignment_role = 'PRIMARY', status = 'ASSIGNED', assigned_by_user_id = null }) {
+    const record = {
+      id: uuidv4(),
+      request_id,
+      assigned_to_user_id,
+      assigned_by_user_id,
+      assignment_role,
+      status,
+      assigned_at: new Date().toISOString(),
+      accepted_at: null,
+      completed_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    memoryStore.requestAssignments.unshift(record);
+
+    if (supabase) {
+      const isReqUuid = request_id && request_id.length === 36 && request_id.includes('-');
+      const isUserUuid = assigned_to_user_id && assigned_to_user_id.length === 36 && assigned_to_user_id.includes('-');
+      if (isReqUuid && isUserUuid) {
+        try {
+          await supabase.from('request_assignments').insert(record);
+        } catch (err) {
+          console.warn('[Repository] Supabase insert request_assignments notice:', err.message);
+        }
+      }
+    }
+    return record;
+  },
+
+  async getRequestAssignments(requestId) {
+    let list = [];
+    if (supabase && typeof requestId === 'string' && requestId.length === 36 && requestId.includes('-')) {
+      try {
+        const { data, error } = await supabase
+          .from('request_assignments')
+          .select('*, users(id, full_name, phone, role)')
+          .eq('request_id', requestId);
+        if (!error && data && data.length > 0) {
+          list = data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getRequestAssignments error:', err.message);
+      }
+    }
+    if (list.length === 0) {
+      list = memoryStore.requestAssignments.filter(a => a.request_id === requestId);
+    }
+    return list;
+  },
+
+  async assignSupportPersonnel(requestId, personnelId, role = 'VOLUNTEER', assignedBy = 'Admin') {
+    const request = await this.getRequestById(requestId);
+    if (!request) throw new Error('Request not found');
+
+    const volunteers = await this.getVolunteers();
+    const responders = await this.getResponders();
+    const person = [...volunteers, ...responders].find(p => p.id === personnelId || p.user_id === personnelId);
+    if (!person) throw new Error('Personnel not found');
+
+    // Add support assignment record
+    const assignment = await this.recordAssignment({
+      request_id: requestId,
+      assigned_to_user_id: person.id,
+      assignment_role: 'SUPPORT',
+      status: 'ASSIGNED',
+      assigned_by_user_id: null
+    });
+
+    const nowIso = new Date().toISOString();
+    if (supabase) {
+      const isUuid = person.id && person.id.length === 36 && person.id.includes('-');
+      try {
+        await supabase.from('request_status_history').insert({
+          request_id: requestId,
+          previous_status: request.status,
+          new_status: request.status,
+          changed_by_user_id: isUuid ? person.id : null,
+          notes: `Additional support ${person.name} (${role}) assigned by ${assignedBy}`,
+          changed_at: nowIso
+        });
+      } catch (err) {
+        console.warn('[Repository] Status history insert warning:', err.message);
+      }
+    }
+
+    memoryStore.statusHistory.unshift({
+      id: uuidv4(),
+      request_id: requestId,
+      previous_status: request.status,
+      new_status: request.status,
+      changed_by: assignedBy,
+      notes: `Additional support ${person.name} (${role}) assigned by ${assignedBy}`,
+      timestamp: nowIso
+    });
+
+    return assignment;
+  },
+
+  async reassignPrimaryPersonnel(requestId, personnelId, role = 'VOLUNTEER', assignedBy = 'Admin', reason = '') {
+    const request = await this.getRequestById(requestId);
+    if (!request) throw new Error('Request not found');
+
+    const volunteers = await this.getVolunteers();
+    const responders = await this.getResponders();
+    const person = [...volunteers, ...responders].find(p => p.id === personnelId || p.user_id === personnelId);
+    if (!person) throw new Error('Personnel not found');
+
+    const previousAssignee = request.assigned_to?.name || 'Previous Assignee';
+    const nowIso = new Date().toISOString();
+    request.assigned_to_user_id = person.id;
+    request.assigned_to = { id: person.id, name: person.name, role };
+    request.status = 'ASSIGNED';
+    request.assigned_at = nowIso;
+    request.updated_at = nowIso;
+    request.assignment_method = `REASSIGNED BY ADMIN`;
+    request.assignment_explanation = `Reassigned from ${previousAssignee} to ${person.name}: ${reason || 'Workload reassignment'}`;
+
+    if (supabase) {
+      const isUuid = person.id && person.id.length === 36 && person.id.includes('-');
+      try {
+        await supabase.from('emergency_requests').update({
+          assigned_to_user_id: isUuid ? person.id : null,
+          status: 'ASSIGNED',
+          assigned_at: nowIso,
+          updated_at: nowIso
+        }).eq('id', requestId);
+
+        await supabase.from('request_assignments')
+          .update({ status: 'CANCELLED', updated_at: nowIso })
+          .eq('request_id', requestId)
+          .eq('assignment_role', 'PRIMARY');
+
+        await supabase.from('request_status_history').insert({
+          request_id: requestId,
+          previous_status: request.status,
+          new_status: 'ASSIGNED',
+          changed_by_user_id: isUuid ? person.id : null,
+          notes: `Primary assignment reallocated from ${previousAssignee} to ${person.name} by ${assignedBy}. Reason: ${reason || 'Workload reallocation'}`,
+          changed_at: nowIso
+        });
+      } catch (err) {
+        console.warn('[Repository] Supabase reassign warning:', err.message);
+      }
+    }
+
+    // Cancel in memoryStore
+    memoryStore.requestAssignments
+      .filter(a => a.request_id === requestId && a.assignment_role === 'PRIMARY')
+      .forEach(a => {
+        a.status = 'CANCELLED';
+        a.updated_at = nowIso;
+      });
+
+    // Record new primary
+    await this.recordAssignment({
+      request_id: requestId,
+      assigned_to_user_id: person.id,
+      assignment_role: 'PRIMARY',
+      status: 'ASSIGNED',
+      assigned_by_user_id: null
+    });
+
+    memoryStore.statusHistory.unshift({
+      id: uuidv4(),
+      request_id: requestId,
+      previous_status: request.status,
+      new_status: 'ASSIGNED',
+      changed_by: assignedBy,
+      notes: `Primary assignment reallocated from ${previousAssignee} to ${person.name} by ${assignedBy}. Reason: ${reason || 'Workload reallocation'}`,
+      timestamp: nowIso
+    });
+
+    return request;
+  },
+
+  async createTaskReport(reportData) {
+    const report = {
+      id: uuidv4(),
+      request_id: reportData.request_id,
+      reported_by_user_id: reportData.reported_by_user_id || null,
+      reporter_name: reportData.reporter_name || 'Reporter',
+      reporter_role: reportData.reporter_role || 'VOLUNTEER',
+      issue_type: reportData.issue_type,
+      description: reportData.description,
+      latitude: reportData.latitude ? Number(reportData.latitude) : null,
+      longitude: reportData.longitude ? Number(reportData.longitude) : null,
+      status: 'OPEN',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      resolved_at: null,
+      resolved_by_user_id: null
+    };
+
+    memoryStore.taskReports.unshift(report);
+
+    if (supabase) {
+      const isReqUuid = report.request_id && report.request_id.length === 36 && report.request_id.includes('-');
+      const isUserUuid = report.reported_by_user_id && report.reported_by_user_id.length === 36 && report.reported_by_user_id.includes('-');
+      try {
+        await supabase.from('task_reports').insert({
+          ...report,
+          request_id: isReqUuid ? report.request_id : null,
+          reported_by_user_id: isUserUuid ? report.reported_by_user_id : null
+        });
+      } catch (err) {
+        console.warn('[Repository] Supabase insert task_reports warning:', err.message);
+      }
+    }
+
+    return report;
+  },
+
+  async getTaskReports({ requestId, status } = {}) {
+    let list = null;
+    if (supabase) {
+      try {
+        let query = supabase.from('task_reports').select('*');
+        if (requestId) query = query.eq('request_id', requestId);
+        if (status) query = query.eq('status', status.toUpperCase());
+        query = query.order('created_at', { ascending: false });
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          list = data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getTaskReports error:', err.message);
+      }
+    }
+    if (list === null) {
+      list = [...memoryStore.taskReports];
+      if (requestId) list = list.filter(r => r.request_id === requestId);
+      if (status) list = list.filter(r => r.status.toUpperCase() === status.toUpperCase());
+      list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    }
+    return list;
+  },
+
+  async updateTaskReportStatus(reportId, newStatus, resolvedBy = null) {
+    const report = memoryStore.taskReports.find(r => r.id === reportId);
+    const nowIso = new Date().toISOString();
+    if (report) {
+      report.status = newStatus;
+      report.updated_at = nowIso;
+      if (newStatus === 'RESOLVED') {
+        report.resolved_at = nowIso;
+        report.resolved_by_user_id = resolvedBy;
+      }
+    }
+
+    if (supabase) {
+      try {
+        const updateData = { status: newStatus, updated_at: nowIso };
+        if (newStatus === 'RESOLVED') {
+          updateData.resolved_at = nowIso;
+          updateData.resolved_by_user_id = resolvedBy;
+        }
+        await supabase.from('task_reports').update(updateData).eq('id', reportId);
+      } catch (err) {
+        console.warn('[Repository] Supabase update task_reports error:', err.message);
+      }
+    }
+
+    return report;
+  },
+
+  async getNearbyFacilities(facilityType = 'hospitals', citizenLat, citizenLon, radiusKm = 10) {
+    const cLat = Number(citizenLat);
+    const cLon = Number(citizenLon);
+    if (isNaN(cLat) || isNaN(cLon)) {
+      return [];
+    }
+
+    let records = [];
+    if (supabase) {
+      try {
+        const table = facilityType === 'hospitals' ? 'hospitals' : 'police_stations';
+        const { data, error } = await supabase.from(table).select('*');
+        if (!error && data && data.length > 0) {
+          records = data;
+        }
+      } catch (err) {
+        console.warn(`[Repository] Supabase query ${facilityType} warning:`, err.message);
+      }
+    }
+
+    if (records.length === 0) {
+      const source = facilityType === 'hospitals' ? memoryStore.hospitals : memoryStore.policeStations;
+      records = source || [];
+    }
+
+    const withDistance = records.map(item => {
+      const lat = Number(item.latitude);
+      const lon = Number(item.longitude);
+      const distance = calculateDistanceKm(cLat, cLon, lat, lon);
+      return {
+        ...item,
+        distance_km: distance
+      };
+    })
+    .filter(item => item.distance_km !== null && item.distance_km <= radiusKm)
+    .sort((a, b) => a.distance_km - b.distance_km);
+
+    return withDistance;
+  },
+
   async getStats() {
     let requests = memoryStore.requests;
     if (supabase) {
@@ -602,20 +1006,27 @@ export const repository = {
 
   async getUserByEmail(email) {
     if (!email) return null;
+    let user = null;
     if (supabase) {
       try {
         const { data, error } = await supabase.from('users').select('*').ilike('email', email.trim()).maybeSingle();
         if (!error && data) {
+          const localUser = memoryStore.users.find(u => u.id === data.id || u.email?.toLowerCase() === email.trim().toLowerCase());
+          const merged = { password: 'Password123!', ...localUser, ...data };
           const idx = memoryStore.users.findIndex(u => u.id === data.id);
-          if (idx !== -1) memoryStore.users[idx] = data;
-          else memoryStore.users.push(data);
-          return data;
+          if (idx !== -1) memoryStore.users[idx] = merged;
+          else memoryStore.users.push(merged);
+          return merged;
         }
       } catch (err) {
         console.warn('[Repository] Supabase getUserByEmail warning:', err.message);
       }
     }
-    return memoryStore.users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase()) || null;
+    const local = memoryStore.users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase());
+    if (local && !local.password) {
+      local.password = 'Password123!';
+    }
+    return local || null;
   },
 
   getAllUsers() {
@@ -664,16 +1075,90 @@ export const repository = {
     return user;
   },
 
-  async registerCitizen({ full_name, email, phone }) {
+  async authenticateUser(email, password) {
+    if (!email || !password) {
+      return { user: null, authUser: null, error: new Error('Email and password are required.') };
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (supabase) {
+      const clientForAuth = supabaseAuth || supabase;
+      const { data: authData, error: signInErr } = await clientForAuth.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: password
+      });
+
+      if (signInErr) {
+        return { user: null, authUser: null, error: new Error('Invalid email or password.') };
+      }
+
+      const authUser = authData.user;
+      let profile = await this.getUserById(authUser.id);
+      if (!profile) {
+        profile = await this.getUserByEmail(normalizedEmail);
+      }
+
+      if (!profile) {
+        return { user: null, authUser, error: new Error('User profile not found in system.') };
+      }
+
+      return { user: profile, authUser, error: null };
+    } else {
+      const profile = await this.getUserByEmail(normalizedEmail);
+      if (!profile) {
+        return { user: null, authUser: null, error: new Error('Invalid email or password.') };
+      }
+      if (profile.password && profile.password !== password) {
+        return { user: null, authUser: null, error: new Error('Invalid email or password.') };
+      }
+      return { user: profile, authUser: null, error: null };
+    }
+  },
+
+  async registerCitizen({ full_name, email, phone, password }) {
+    if (!email || !password) {
+      throw new Error('Email and password are required for registration.');
+    }
     const normalizedEmail = email.trim().toLowerCase();
     const existing = await this.getUserByEmail(normalizedEmail);
     if (existing) {
       throw new Error('An account with this email address already exists. Please log in.');
     }
 
-    const userId = uuidv4();
+    let authUserId = null;
+    if (supabase) {
+      let authResult;
+      if (supabase.auth && supabase.auth.admin) {
+        authResult = await supabase.auth.admin.createUser({
+          email: normalizedEmail,
+          password: password,
+          email_confirm: true,
+          user_metadata: { full_name: full_name.trim(), role: 'CITIZEN' }
+        });
+      } else if (supabase.auth) {
+        authResult = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password: password
+        });
+      }
+
+      if (authResult?.error) {
+        const msg = authResult.error.message.toLowerCase();
+        if (msg.includes('already registered') || msg.includes('already exists')) {
+          throw new Error('An account with this email address already exists. Please log in.');
+        }
+        throw new Error(`Registration failed: ${authResult.error.message}`);
+      }
+
+      authUserId = authResult?.data?.user?.id;
+    }
+
+    if (!authUserId) {
+      authUserId = uuidv4();
+    }
+
     const user = {
-      id: userId,
+      id: authUserId,
       email: normalizedEmail,
       full_name: full_name.trim(),
       phone: phone ? phone.trim() : null,
@@ -682,14 +1167,28 @@ export const repository = {
     };
 
     if (supabase) {
-      const { error } = await supabase.from('users').insert(user);
-      if (error) throw new Error(error.message);
+      const { error: dbErr } = await supabase.from('users').insert(user);
+      if (dbErr) {
+        console.error('[Repository] Error inserting citizen user into DB:', dbErr.message);
+        if (supabase.auth && supabase.auth.admin && authUserId) {
+          try {
+            await supabase.auth.admin.deleteUser(authUserId);
+          } catch (cleanErr) {
+            console.error('[Repository] Cleanup of auth user failed:', cleanErr.message);
+          }
+        }
+        throw new Error(`Failed to create user profile: ${dbErr.message}`);
+      }
     }
+
     memoryStore.users.push(user);
     return user;
   },
 
-  async registerVolunteer({ full_name, email, phone, capabilities = [], vehicle_type = 'Two Wheeler' }) {
+  async registerVolunteer({ full_name, email, phone, password, capabilities = [], vehicle_type = 'Two Wheeler' }) {
+    if (!email || !password) {
+      throw new Error('Email and password are required for registration.');
+    }
     const normalizedEmail = email.trim().toLowerCase();
     const existing = await this.getUserByEmail(normalizedEmail);
     if (existing) {
@@ -701,9 +1200,40 @@ export const repository = {
       .map(c => c.toUpperCase().replace('TRANSPORT', 'TRANSPORTATION').replace('GENERAL_RELIEF', 'GENERAL_ASSISTANCE'))
       .filter(c => validCaps.includes(c));
 
-    const userId = uuidv4();
+    let authUserId = null;
+    if (supabase) {
+      let authResult;
+      if (supabase.auth && supabase.auth.admin) {
+        authResult = await supabase.auth.admin.createUser({
+          email: normalizedEmail,
+          password: password,
+          email_confirm: true,
+          user_metadata: { full_name: full_name.trim(), role: 'VOLUNTEER' }
+        });
+      } else if (supabase.auth) {
+        authResult = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password: password
+        });
+      }
+
+      if (authResult?.error) {
+        const msg = authResult.error.message.toLowerCase();
+        if (msg.includes('already registered') || msg.includes('already exists')) {
+          throw new Error('An account with this email address already exists. Please log in.');
+        }
+        throw new Error(`Registration failed: ${authResult.error.message}`);
+      }
+
+      authUserId = authResult?.data?.user?.id;
+    }
+
+    if (!authUserId) {
+      authUserId = uuidv4();
+    }
+
     const user = {
-      id: userId,
+      id: authUserId,
       email: normalizedEmail,
       full_name: full_name.trim(),
       phone: phone ? phone.trim() : null,
@@ -713,10 +1243,20 @@ export const repository = {
 
     if (supabase) {
       const { error: userErr } = await supabase.from('users').insert(user);
-      if (userErr) throw new Error(userErr.message);
+      if (userErr) {
+        console.error('[Repository] Error inserting volunteer user into DB:', userErr.message);
+        if (supabase.auth && supabase.auth.admin && authUserId) {
+          try {
+            await supabase.auth.admin.deleteUser(authUserId);
+          } catch (cleanErr) {
+            console.error('[Repository] Cleanup of auth user failed:', cleanErr.message);
+          }
+        }
+        throw new Error(`Failed to create volunteer profile: ${userErr.message}`);
+      }
 
       const { error: volErr } = await supabase.from('volunteers').insert({
-        id: userId,
+        id: authUserId,
         vehicle_type: vehicle_type || 'Personal Vehicle',
         is_available: true,
         latitude: 16.5440,
@@ -726,7 +1266,7 @@ export const repository = {
 
       if (capsToInsert.length > 0) {
         const capRows = capsToInsert.map(c => ({
-          volunteer_id: userId,
+          volunteer_id: authUserId,
           capability: c
         }));
         const { error: capErr } = await supabase.from('volunteer_capabilities').insert(capRows);
@@ -736,8 +1276,8 @@ export const repository = {
 
     memoryStore.users.push(user);
     memoryStore.volunteers.push({
-      id: userId,
-      user_id: userId,
+      id: authUserId,
+      user_id: authUserId,
       name: user.full_name,
       phone: user.phone || '',
       email: user.email,
@@ -751,7 +1291,10 @@ export const repository = {
     return { ...user, capabilities: capsToInsert };
   },
 
-  async registerResponder({ full_name, email, phone, responder_type = 'RESCUE_TEAM', badge_number = 'PENDING_APPROVAL' }) {
+  async registerResponder({ full_name, email, phone, password, responder_type = 'RESCUE_TEAM', badge_number = 'PENDING_APPROVAL' }) {
+    if (!email || !password) {
+      throw new Error('Email and password are required for registration.');
+    }
     const normalizedEmail = email.trim().toLowerCase();
     const existing = await this.getUserByEmail(normalizedEmail);
     if (existing) {
@@ -763,9 +1306,40 @@ export const repository = {
       ? responder_type.toUpperCase()
       : 'RESCUE_TEAM';
 
-    const userId = uuidv4();
+    let authUserId = null;
+    if (supabase) {
+      let authResult;
+      if (supabase.auth && supabase.auth.admin) {
+        authResult = await supabase.auth.admin.createUser({
+          email: normalizedEmail,
+          password: password,
+          email_confirm: true,
+          user_metadata: { full_name: full_name.trim(), role: 'RESPONDER' }
+        });
+      } else if (supabase.auth) {
+        authResult = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password: password
+        });
+      }
+
+      if (authResult?.error) {
+        const msg = authResult.error.message.toLowerCase();
+        if (msg.includes('already registered') || msg.includes('already exists')) {
+          throw new Error('An account with this email address already exists. Please log in.');
+        }
+        throw new Error(`Registration failed: ${authResult.error.message}`);
+      }
+
+      authUserId = authResult?.data?.user?.id;
+    }
+
+    if (!authUserId) {
+      authUserId = uuidv4();
+    }
+
     const user = {
-      id: userId,
+      id: authUserId,
       email: normalizedEmail,
       full_name: full_name.trim(),
       phone: phone ? phone.trim() : null,
@@ -775,11 +1349,20 @@ export const repository = {
 
     if (supabase) {
       const { error: userErr } = await supabase.from('users').insert(user);
-      if (userErr) throw new Error(userErr.message);
+      if (userErr) {
+        console.error('[Repository] Error inserting responder user into DB:', userErr.message);
+        if (supabase.auth && supabase.auth.admin && authUserId) {
+          try {
+            await supabase.auth.admin.deleteUser(authUserId);
+          } catch (cleanErr) {
+            console.error('[Repository] Cleanup of auth user failed:', cleanErr.message);
+          }
+        }
+        throw new Error(`Failed to create responder profile: ${userErr.message}`);
+      }
 
-      // Safe approval model: new public responder registration defaults to is_available: false
       const { error: respErr } = await supabase.from('responders').insert({
-        id: userId,
+        id: authUserId,
         badge_number: (badge_number || 'PENDING_VERIFICATION').trim(),
         responder_type: assignedType,
         is_available: false,
@@ -791,8 +1374,8 @@ export const repository = {
 
     memoryStore.users.push(user);
     memoryStore.responders.push({
-      id: userId,
-      user_id: userId,
+      id: authUserId,
+      user_id: authUserId,
       name: user.full_name,
       phone: user.phone || '',
       email: user.email,

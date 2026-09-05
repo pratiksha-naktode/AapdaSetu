@@ -42,6 +42,8 @@ app.use('/api/requests', requestsRoutes);
 app.use('/api/responders', respondersRoutes);
 app.use('/api/volunteers', volunteersRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/facilities', dashboardRoutes);
+app.use('/api/reports', requestsRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/notifications', notificationsRoutes);
 

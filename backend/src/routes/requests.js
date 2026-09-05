@@ -220,4 +220,120 @@ router.post('/:id/assign', async (req, res) => {
   });
 });
 
+/**
+ * POST /api/requests/:id/assign-support
+ * Assign additional volunteer or responder to the same task without unassigning primary
+ */
+router.post('/:id/assign-support', async (req, res) => {
+  try {
+    const { personnel_id, role, assigned_by } = req.body;
+    if (!personnel_id) {
+      return res.status(400).json({ error: 'personnel_id is required' });
+    }
+    const assignment = await repository.assignSupportPersonnel(
+      req.params.id,
+      personnel_id,
+      role || 'VOLUNTEER',
+      assigned_by || 'Admin'
+    );
+    const updatedRequest = await repository.getRequestById(req.params.id);
+    return res.json({
+      message: 'Additional support assigned successfully',
+      assignment,
+      request: updatedRequest
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/requests/:id/reassign
+ * Reassign the primary assignment of a task to a different personnel
+ */
+router.post('/:id/reassign', async (req, res) => {
+  try {
+    const { personnel_id, role, assigned_by, reason } = req.body;
+    if (!personnel_id) {
+      return res.status(400).json({ error: 'personnel_id is required' });
+    }
+    const request = await repository.reassignPrimaryPersonnel(
+      req.params.id,
+      personnel_id,
+      role || 'VOLUNTEER',
+      assigned_by || 'Admin',
+      reason
+    );
+    return res.json({
+      message: 'Primary assignment reallocated successfully',
+      request
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/requests/:id/reports
+ * Submit task help / issue report from volunteer or responder
+ */
+router.post('/:id/reports', async (req, res) => {
+  try {
+    const { reported_by_user_id, reporter_name, reporter_role, issue_type, description, latitude, longitude } = req.body;
+    if (!issue_type || !description) {
+      return res.status(400).json({ error: 'Issue type and description are required' });
+    }
+    const report = await repository.createTaskReport({
+      request_id: req.params.id,
+      reported_by_user_id,
+      reporter_name,
+      reporter_role: (reporter_role || 'VOLUNTEER').toUpperCase(),
+      issue_type,
+      description,
+      latitude,
+      longitude
+    });
+    return res.status(201).json({
+      message: 'Issue reported to Command Center successfully',
+      report
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/reports
+ * Retrieve all active / acknowledged / resolved task reports
+ */
+router.get('/reports/all', async (req, res) => {
+  try {
+    const { status, request_id } = req.query;
+    const reports = await repository.getTaskReports({ requestId: request_id, status });
+    return res.json({ count: reports.length, reports });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/reports/:id
+ * Acknowledge or Resolve task report
+ */
+router.patch('/reports/:id', async (req, res) => {
+  try {
+    const { status, resolved_by } = req.body;
+    if (!status) {
+      return res.status(400).json({ error: 'status is required (OPEN, ACKNOWLEDGED, RESOLVED)' });
+    }
+    const report = await repository.updateTaskReportStatus(req.params.id, status, resolved_by);
+    return res.json({
+      message: `Report marked as ${status}`,
+      report
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
 export default router;

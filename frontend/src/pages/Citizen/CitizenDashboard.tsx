@@ -5,16 +5,78 @@ import { getLocalHistory } from '../../services/offlineStorage';
 import { EmergencyRequest } from '../../types';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
-import { AlertCircle, Package, ArrowRight, ShieldCheck, MapPin, Users, User, Camera } from 'lucide-react';
+import { AlertCircle, Package, ArrowRight, ShieldCheck, MapPin, Users, User, Camera, Navigation, Phone, ExternalLink, Building2, ShieldAlert } from 'lucide-react';
 
 export const CitizenDashboard: React.FC = () => {
   const { user } = useAuth();
   const [requests, setRequests] = useState<EmergencyRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
+  // Real GPS & Nearby Facilities state
+  const [userCoords, setUserCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [locating, setLocating] = useState<boolean>(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [hospitals, setHospitals] = useState<any[]>([]);
+  const [policeStations, setPoliceStations] = useState<any[]>([]);
+  const [loadingFacilities, setLoadingFacilities] = useState<boolean>(false);
+
   useEffect(() => {
     loadRequests();
+    attemptAutoLocation();
   }, []);
+
+  const attemptAutoLocation = () => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          setUserCoords(coords);
+          fetchNearby(coords.lat, coords.lon);
+        },
+        () => {
+          // Keep prompt for user to manually click [Enable Location]
+        },
+        { timeout: 5000 }
+      );
+    }
+  };
+
+  const handleRequestLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setLocating(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setUserCoords(coords);
+        fetchNearby(coords.lat, coords.lon);
+      },
+      (err) => {
+        setLocating(false);
+        setLocationError(err.message || 'GPS location permission was denied. Please enable location permissions in your browser.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const fetchNearby = async (lat: number, lon: number) => {
+    setLoadingFacilities(true);
+    try {
+      const data = await api.getNearbyFacilities(lat, lon, 25);
+      setHospitals(data.hospitals || []);
+      setPoliceStations(data.police_stations || []);
+    } catch (err) {
+      console.error('Failed to fetch nearby facilities:', err);
+    } finally {
+      setLoadingFacilities(false);
+    }
+  };
 
   const loadRequests = async () => {
     setLoading(true);
@@ -157,7 +219,203 @@ export const CitizenDashboard: React.FC = () => {
         </Link>
       </div>
 
-      {/* Citizen Active Requests */}
+      {/* Nearby Emergency Facilities (Hospitals & Police Stations) */}
+      <div className="card" style={{ padding: '1.5rem', borderLeft: '4px solid #38bdf8' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#38bdf8', fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase' }}>
+              <Navigation size={14} /> Critical Facilities Radar
+            </div>
+            <h2 style={{ fontSize: '1.3rem', fontWeight: 800, marginTop: '0.2rem' }}>
+              Nearby Hospitals & Police Stations
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              Live PostGIS distance calculation from your verified GPS coordinates.
+            </p>
+          </div>
+
+          <div>
+            {!userCoords ? (
+              <button
+                onClick={handleRequestLocation}
+                disabled={locating}
+                className="btn btn-primary"
+                style={{ padding: '0.45rem 1rem', fontSize: '0.85rem', gap: '0.4rem', background: '#0284c7' }}
+              >
+                <Navigation size={14} /> {locating ? 'Acquiring GPS...' : 'Enable Location'}
+              </button>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontSize: '0.75rem', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '0.25rem 0.6rem', borderRadius: 'var(--radius-sm)' }}>
+                  📍 {userCoords.lat.toFixed(4)}, {userCoords.lon.toFixed(4)}
+                </span>
+                <button
+                  onClick={() => fetchNearby(userCoords.lat, userCoords.lon)}
+                  disabled={loadingFacilities}
+                  className="btn btn-outline"
+                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                >
+                  {loadingFacilities ? 'Updating...' : 'Refresh'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {locationError && (
+          <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', color: '#fca5a5', padding: '0.75rem 1rem', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+            ⚠️ {locationError}
+          </div>
+        )}
+
+        {!userCoords ? (
+          <div style={{ textAlign: 'center', padding: '2rem 1rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
+            <Building2 size={36} color="#64748b" style={{ margin: '0 auto 0.5rem' }} />
+            <p style={{ color: '#fff', fontWeight: 700, fontSize: '0.95rem' }}>Location Services Disabled</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.25rem', maxWidth: '450px', margin: '0.25rem auto 1rem' }}>
+              Enable your location to automatically find and navigate to the closest emergency hospitals and police stations.
+            </p>
+            <button
+              onClick={handleRequestLocation}
+              disabled={locating}
+              className="btn btn-primary"
+              style={{ padding: '0.45rem 1.25rem', fontSize: '0.85rem' }}
+            >
+              {locating ? 'Acquiring GPS...' : 'Enable Location'}
+            </button>
+          </div>
+        ) : (
+          <div className="grid-2">
+            {/* Hospitals Section */}
+            <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                <Building2 size={18} color="#ef4444" />
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Nearby Hospitals</h3>
+              </div>
+
+              {loadingFacilities ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Searching nearby medical facilities...</p>
+              ) : hospitals.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  No nearby hospitals found.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {hospitals.map(h => (
+                    <div
+                      key={h.id}
+                      style={{
+                        padding: '0.85rem',
+                        background: 'var(--bg-card)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 'var(--radius-sm)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.35rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <strong style={{ fontSize: '0.95rem', color: '#fff' }}>{h.name}</strong>
+                        {h.distance_km != null && (
+                          <span style={{ fontSize: '0.72rem', background: '#ef4444', color: '#fff', padding: '0.1rem 0.4rem', borderRadius: '4px', fontWeight: 800 }}>
+                            {h.distance_km} km away
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {h.address}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.35rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {h.phone ? (
+                          <a
+                            href={`tel:${h.phone}`}
+                            style={{ color: '#38bdf8', fontSize: '0.8rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                          >
+                            <Phone size={13} /> {h.phone}
+                          </a>
+                        ) : (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No phone listed</span>
+                        )}
+                        <Link
+                          to={`/admin/gis?lat=${h.latitude}&lon=${h.longitude}`}
+                          className="btn btn-outline"
+                          style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem', gap: '0.25rem' }}
+                        >
+                          <ExternalLink size={12} /> View on Map
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Police Stations Section */}
+            <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                <ShieldAlert size={18} color="#3b82f6" />
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Nearby Police Stations</h3>
+              </div>
+
+              {loadingFacilities ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Searching nearby police stations...</p>
+              ) : policeStations.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  No nearby police stations found.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {policeStations.map(p => (
+                    <div
+                      key={p.id}
+                      style={{
+                        padding: '0.85rem',
+                        background: 'var(--bg-card)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 'var(--radius-sm)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.35rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <strong style={{ fontSize: '0.95rem', color: '#fff' }}>{p.name}</strong>
+                        {p.distance_km != null && (
+                          <span style={{ fontSize: '0.72rem', background: '#3b82f6', color: '#fff', padding: '0.1rem 0.4rem', borderRadius: '4px', fontWeight: 800 }}>
+                            {p.distance_km} km away
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {p.address}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.35rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {p.phone ? (
+                          <a
+                            href={`tel:${p.phone}`}
+                            style={{ color: '#38bdf8', fontSize: '0.8rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                          >
+                            <Phone size={13} /> {p.phone}
+                          </a>
+                        ) : (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No phone listed</span>
+                        )}
+                        <Link
+                          to={`/admin/gis?lat=${p.latitude}&lon=${p.longitude}`}
+                          className="btn btn-outline"
+                          style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem', gap: '0.25rem' }}
+                        >
+                          <ExternalLink size={12} /> View on Map
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
           <div>

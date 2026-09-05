@@ -3,7 +3,7 @@ import { api } from '../../services/api';
 import { EmergencyRequest, DashboardStats, DisasterEvent, Responder, Volunteer } from '../../types';
 import { GISMap } from './GISMap';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
-import { ShieldAlert, Users, HeartHandshake, CheckCircle2, AlertTriangle, Layers, Radio, PhoneCall, RefreshCw } from 'lucide-react';
+import { ShieldAlert, Users, HeartHandshake, CheckCircle2, AlertTriangle, Layers, Radio, PhoneCall, RefreshCw, AlertOctagon, UserPlus, UserCheck, X } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -11,11 +11,24 @@ export const AdminDashboard: React.FC = () => {
   const [requests, setRequests] = useState<EmergencyRequest[]>([]);
   const [responders, setResponders] = useState<Responder[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
+  const [taskReports, setTaskReports] = useState<any[]>([]);
   const [notificationLogs, setNotificationLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Filter state
   const [filterPriority, setFilterPriority] = useState<string>('ALL');
+
+  // Modal states for multi-personnel assignment / reassign
+  const [actionModal, setActionModal] = useState<{
+    type: 'SUPPORT' | 'REASSIGN';
+    requestId: string;
+    request?: EmergencyRequest;
+    reportId?: string;
+  } | null>(null);
+
+  const [selectedPersonnelId, setSelectedPersonnelId] = useState<string>('');
+  const [reassignReason, setReassignReason] = useState<string>('');
+  const [actionProcessing, setActionProcessing] = useState<boolean>(false);
 
   useEffect(() => {
     loadAllData();
@@ -25,18 +38,20 @@ export const AdminDashboard: React.FC = () => {
 
   const loadAllData = async () => {
     try {
-      const [s, ev, reqs, resps, vols] = await Promise.all([
+      const [s, ev, reqs, resps, vols, reps] = await Promise.all([
         api.getStats(),
         api.getDisasterEvent(),
         api.getRequests(),
         api.getResponders(),
-        api.getVolunteers()
+        api.getVolunteers(),
+        api.getTaskReports().catch(() => [])
       ]);
       setStats(s);
       setEvent(ev);
       setRequests(reqs);
       setResponders(resps);
       setVolunteers(vols);
+      setTaskReports(reps);
 
       // Fetch SMS notifications audit
       try {
@@ -50,6 +65,92 @@ export const AdminDashboard: React.FC = () => {
       console.error('Error fetching admin dashboard data:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleAcknowledgeReport = async (reportId: string) => {
+    try {
+      await api.updateTaskReportStatus(reportId, 'ACKNOWLEDGED');
+      loadAllData();
+    } catch (err: any) {
+      alert('Failed to acknowledge report: ' + err.message);
+    }
+  };
+
+  const handleResolveReport = async (reportId: string) => {
+    try {
+      await api.updateTaskReportStatus(reportId, 'RESOLVED');
+      loadAllData();
+    } catch (err: any) {
+      alert('Failed to resolve report: ' + err.message);
+    }
+  };
+
+  const handleOpenSupportModal = (requestId: string, reportId?: string) => {
+    const req = requests.find(r => r.id === requestId);
+    setActionModal({ type: 'SUPPORT', requestId, request: req, reportId });
+    setSelectedPersonnelId('');
+    setReassignReason('');
+  };
+
+  const handleOpenReassignModal = (requestId: string, reportId?: string) => {
+    const req = requests.find(r => r.id === requestId);
+    setActionModal({ type: 'REASSIGN', requestId, request: req, reportId });
+    setSelectedPersonnelId('');
+    setReassignReason('');
+  };
+
+  const handleExecutePersonnelAction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!actionModal || !selectedPersonnelId) return;
+
+    setActionProcessing(true);
+    try {
+      const resp = responders.find(r => r.id === selectedPersonnelId);
+      const vol = volunteers.find(v => v.id === selectedPersonnelId);
+
+      const candidate = resp ? {
+        user_id: resp.id,
+        name: resp.name,
+        role: 'RESPONDER',
+        phone: resp.phone
+      } : vol ? {
+        user_id: vol.id,
+        name: vol.name,
+        role: 'VOLUNTEER',
+        phone: vol.phone
+      } : null;
+
+      if (!candidate) {
+        alert('Selected personnel not found');
+        return;
+      }
+
+      if (actionModal.type === 'SUPPORT') {
+        await api.assignSupport(actionModal.requestId, candidate.user_id, candidate.role);
+        if (actionModal.reportId) {
+          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED');
+        }
+        alert(`Support personnel ${candidate.name} assigned successfully!`);
+      } else {
+        await api.reassignTask(
+          actionModal.requestId,
+          candidate.user_id,
+          candidate.role,
+          reassignReason || 'Admin manual task reassignment from Command Center'
+        );
+        if (actionModal.reportId) {
+          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED');
+        }
+        alert(`Task reassigned to ${candidate.name} as PRIMARY!`);
+      }
+
+      setActionModal(null);
+      loadAllData();
+    } catch (err: any) {
+      alert('Action failed: ' + err.message);
+    } finally {
+      setActionProcessing(false);
     }
   };
 
@@ -158,13 +259,136 @@ export const AdminDashboard: React.FC = () => {
         <GISMap />
       </div>
 
+      {/* Task Help & Field Escalation Reports */}
+      <div className="card" style={{ padding: '1.5rem', borderLeft: '4px solid #f59e0b' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f59e0b', fontWeight: 800, fontSize: '0.85rem', textTransform: 'uppercase' }}>
+              <AlertOctagon size={18} /> Field Help & Issue Reports ({taskReports.length})
+            </div>
+            <h2 style={{ fontSize: '1.3rem', fontWeight: 800, marginTop: '0.2rem' }}>
+              Personnel Support & Task Escalation Queue
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              Real-time barriers, medical needs, access obstacles, or backup requests reported by field Responders and Volunteers.
+            </p>
+          </div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            Open issues: <strong>{taskReports.filter(r => r.status === 'OPEN').length}</strong>
+          </div>
+        </div>
+
+        {taskReports.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-secondary)' }}>
+            <CheckCircle2 size={36} color="#10b981" style={{ margin: '0 auto 0.5rem' }} />
+            <p style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 700 }}>All field teams operating smoothly</p>
+            <p style={{ fontSize: '0.8rem' }}>No pending issue reports or help requests from field personnel.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+            {taskReports.map((rep) => {
+              const isOpen = rep.status === 'OPEN';
+              const isAck = rep.status === 'ACKNOWLEDGED';
+              const isResolved = rep.status === 'RESOLVED';
+
+              return (
+                <div
+                  key={rep.id}
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    border: `1px solid ${isOpen ? '#f59e0b' : isAck ? '#38bdf8' : 'var(--border-color)'}`,
+                    borderRadius: 'var(--radius-md)',
+                    padding: '1rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    gap: '0.85rem'
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: '0.15rem 0.5rem',
+                        borderRadius: '4px',
+                        background: isOpen ? '#f59e0b' : isAck ? '#0284c7' : '#10b981',
+                        color: isOpen ? '#000' : '#fff',
+                        textTransform: 'uppercase'
+                      }}>
+                        {rep.status}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        {new Date(rep.created_at).toLocaleTimeString()}
+                      </span>
+                    </div>
+
+                    <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>
+                      {rep.issue_type}
+                    </div>
+
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-primary)', marginTop: '0.35rem', lineHeight: 1.4 }}>
+                      "{rep.description}"
+                    </p>
+
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <span>Reported by: <strong style={{ color: '#e2e8f0' }}>{rep.reporter_name}</strong> ({rep.reporter_role})</span>
+                      <span>•</span>
+                      <span>Task: <strong style={{ color: '#38bdf8' }}>#{rep.request_id?.slice(0, 8)}</strong></span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', borderTop: '1px solid var(--border-color)', paddingTop: '0.65rem' }}>
+                    {isOpen && (
+                      <button
+                        onClick={() => handleAcknowledgeReport(rep.id)}
+                        className="btn btn-outline"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => handleOpenSupportModal(rep.request_id, rep.id)}
+                      className="btn btn-primary"
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem', background: '#0284c7' }}
+                    >
+                      <UserPlus size={12} /> Assign Support
+                    </button>
+
+                    <button
+                      onClick={() => handleOpenReassignModal(rep.request_id, rep.id)}
+                      className="btn btn-outline"
+                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem' }}
+                    >
+                      <UserCheck size={12} /> Reassign
+                    </button>
+
+                    {!isResolved && (
+                      <button
+                        onClick={() => handleResolveReport(rep.id)}
+                        className="btn btn-success"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                      >
+                        Resolve
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Priority Queue & Dispatch Table */}
       <div className="card" style={{ padding: '1.5rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
           <div>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Intelligent Priority Queue</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              Ranked descending by AI Priority Score (0–100)
+              Ranked descending by AI Priority Score (0–100) • Automatic Volunteer Matching & Support Telemetry
             </p>
           </div>
 
@@ -206,55 +430,103 @@ export const AdminDashboard: React.FC = () => {
                   <th style={{ padding: '0.75rem 0.5rem' }}>PEOPLE</th>
                   <th style={{ padding: '0.75rem 0.5rem' }}>AI RATIONALE</th>
                   <th style={{ padding: '0.75rem 0.5rem' }}>STATUS</th>
-                  <th style={{ padding: '0.75rem 0.5rem' }}>ASSIGN TO</th>
+                  <th style={{ padding: '0.75rem 0.5rem' }}>ASSIGNMENT & PERSONNEL</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRequests.map((req) => (
-                  <tr
-                    key={req.id}
-                    style={{
-                      borderBottom: '1px solid var(--border-color)',
-                      background: req.priority_level === 'CRITICAL' && req.status !== 'RESOLVED' ? 'rgba(239, 68, 68, 0.05)' : 'transparent'
-                    }}
-                  >
-                    <td style={{ padding: '0.75rem 0.5rem' }}>
-                      <PriorityBadge level={req.priority_level} score={req.priority_score} />
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem', fontWeight: 700 }}>
-                      {req.category?.replace(/_/g, ' ').toUpperCase()}
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem', maxWidth: '200px', color: 'var(--text-secondary)' }}>
-                      {req.address || `${req.latitude.toFixed(3)}, ${req.longitude.toFixed(3)}`}
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem', fontWeight: 700 }}>
-                      {req.people_count}
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem', maxWidth: '260px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      {req.priority_reason}
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem' }}>
-                      <StatusBadge status={req.status} />
-                    </td>
-                    <td style={{ padding: '0.75rem 0.5rem' }}>
-                      {req.assigned_to ? (
-                        <span style={{ color: '#93c5fd', fontWeight: 600 }}>{req.assigned_to.name}</span>
-                      ) : (
-                        <select
-                          onChange={(e) => handleQuickAssign(req.id, e.target.value)}
-                          className="form-select"
-                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', width: 'auto' }}
-                          defaultValue=""
-                        >
-                          <option value="" disabled>Assign Responder...</option>
-                          {responders.map((r) => (
-                            <option key={r.id} value={r.id}>{r.name} ({r.responder_type})</option>
-                          ))}
-                        </select>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filteredRequests.map((req) => {
+                  const supportList = (req as any).support_assignments || [];
+                  const isAuto = (req as any).assignment_method === 'AUTO_NEAREST';
+
+                  return (
+                    <tr
+                      key={req.id}
+                      style={{
+                        borderBottom: '1px solid var(--border-color)',
+                        background: req.priority_level === 'CRITICAL' && req.status !== 'RESOLVED' ? 'rgba(239, 68, 68, 0.05)' : 'transparent'
+                      }}
+                    >
+                      <td style={{ padding: '0.75rem 0.5rem' }}>
+                        <PriorityBadge level={req.priority_level} score={req.priority_score} />
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontWeight: 700 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                          <span>{req.category?.replace(/_/g, ' ').toUpperCase()}</span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{req.request_type}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', maxWidth: '200px', color: 'var(--text-secondary)' }}>
+                        {req.address || `${req.latitude.toFixed(3)}, ${req.longitude.toFixed(3)}`}
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontWeight: 700 }}>
+                        {req.people_count}
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', maxWidth: '240px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {req.priority_reason}
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem' }}>
+                        <StatusBadge status={req.status} />
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', minWidth: '220px' }}>
+                        {req.assigned_to ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                              {isAuto && (
+                                <span style={{ fontSize: '0.65rem', background: '#9333ea', color: '#fff', padding: '0.1rem 0.4rem', borderRadius: '4px', fontWeight: 800 }}>
+                                  AUTO — NEAREST
+                                </span>
+                              )}
+                              <span style={{ color: '#93c5fd', fontWeight: 700 }}>
+                                {req.assigned_to.name}
+                              </span>
+                            </div>
+
+                            {(req as any).assignment_explanation && (
+                              <div style={{ fontSize: '0.72rem', color: '#cbd5e1', lineHeight: 1.3, background: 'rgba(255,255,255,0.03)', padding: '0.3rem', borderRadius: '4px' }}>
+                                {(req as any).assignment_explanation}
+                              </div>
+                            )}
+
+                            {supportList.length > 0 && (
+                              <div style={{ fontSize: '0.72rem', color: '#6ee7b7' }}>
+                                <strong>+ Support:</strong> {supportList.map((s: any) => s.name).join(', ')}
+                              </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.2rem' }}>
+                              <button
+                                onClick={() => handleOpenSupportModal(req.id)}
+                                className="btn btn-outline"
+                                style={{ padding: '0.2rem 0.45rem', fontSize: '0.7rem' }}
+                              >
+                                + Support
+                              </button>
+                              <button
+                                onClick={() => handleOpenReassignModal(req.id)}
+                                className="btn btn-outline"
+                                style={{ padding: '0.2rem 0.45rem', fontSize: '0.7rem' }}
+                              >
+                                Reassign
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <select
+                            onChange={(e) => handleQuickAssign(req.id, e.target.value)}
+                            className="form-select"
+                            style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', width: 'auto' }}
+                            defaultValue=""
+                          >
+                            <option value="" disabled>Assign Responder...</option>
+                            {responders.map((r) => (
+                              <option key={r.id} value={r.id}>{r.name} ({r.responder_type})</option>
+                            ))}
+                          </select>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -286,6 +558,116 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Action Modal: Support or Reassign */}
+      {actionModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1rem'
+        }}>
+          <div className="card" style={{ maxWidth: '500px', width: '100%', padding: '2rem', border: '1px solid var(--border-color)', boxShadow: '0 20px 40px rgba(0,0,0,0.6)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: actionModal.type === 'SUPPORT' ? '#38bdf8' : '#f59e0b', fontWeight: 800 }}>
+                {actionModal.type === 'SUPPORT' ? <UserPlus size={20} /> : <UserCheck size={20} />}
+                <span style={{ fontSize: '1.15rem' }}>
+                  {actionModal.type === 'SUPPORT' ? 'Assign Support Personnel' : 'Reassign Task (Primary)'}
+                </span>
+              </div>
+              <button
+                onClick={() => setActionModal(null)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleExecutePersonnelAction}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                  Target Task
+                </label>
+                <div style={{ padding: '0.6rem 0.8rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+                  <strong>#{actionModal.requestId.slice(0, 8)}</strong>
+                  {actionModal.request && ` — ${actionModal.request.category?.replace(/_/g, ' ')} (${actionModal.request.address})`}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                  Select Personnel (Responder or Volunteer)
+                </label>
+                <select
+                  value={selectedPersonnelId}
+                  onChange={(e) => setSelectedPersonnelId(e.target.value)}
+                  className="form-input"
+                  required
+                  style={{ width: '100%', padding: '0.6rem' }}
+                >
+                  <option value="" disabled>-- Select available candidate --</option>
+                  <optgroup label="Emergency Responders">
+                    {responders.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} ({r.responder_type}) • {r.is_available ? 'Available' : 'Busy'}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Community Volunteers">
+                    {volunteers.map(v => (
+                      <option key={v.id} value={v.id}>
+                        {v.name} ({(v as any).skills?.join(', ') || (v as any).capabilities?.join(', ') || 'Relief'}) • {v.is_available ? 'Available' : 'Busy'}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+
+              {actionModal.type === 'REASSIGN' && (
+                <div style={{ marginBottom: '1.25rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                    Reassignment Rationale
+                  </label>
+                  <input
+                    type="text"
+                    value={reassignReason}
+                    onChange={(e) => setReassignReason(e.target.value)}
+                    placeholder="e.g. Field issue reported: road blocked / responder reassigned"
+                    className="form-input"
+                    style={{ width: '100%', padding: '0.6rem' }}
+                  />
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setActionModal(null)}
+                  className="btn btn-outline"
+                  style={{ padding: '0.5rem 1rem' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionProcessing || !selectedPersonnelId}
+                  className="btn btn-primary"
+                  style={{ padding: '0.5rem 1.25rem' }}
+                >
+                  {actionProcessing ? 'Processing...' : actionModal.type === 'SUPPORT' ? 'Confirm Support' : 'Confirm Reassign'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

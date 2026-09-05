@@ -67,12 +67,17 @@ export function determineRequiredResponderType(request) {
  * Emergency rescue → RESCUE_SUPPORT
  */
 export function determineRequiredCapability(request) {
+  const explicitResource = (request.requested_resource || '').toUpperCase();
+  if (['FOOD', 'WATER', 'MEDICINE', 'FIRST_AID', 'TRANSPORTATION', 'GENERAL_ASSISTANCE', 'RESCUE_SUPPORT'].includes(explicitResource)) {
+    return explicitResource;
+  }
+
   const resource = (request.requested_resource || '').toLowerCase();
   const category = (request.category || '').toLowerCase();
   const desc = (request.description || '').toLowerCase();
   const text = `${resource} ${category} ${desc}`;
 
-  if (request.request_type === 'RESOURCE') {
+  if (request.request_type === 'RESOURCE' || request.requested_resource || category.includes('food') || category.includes('water') || category.includes('med') || category.includes('supply')) {
     if (text.includes('med') || text.includes('insulin') || text.includes('drug') || text.includes('tablet')) {
       return 'MEDICINE';
     }
@@ -104,35 +109,46 @@ export function determineRequiredCapability(request) {
 /**
  * 5. Transparent Rule-Based Scoring Engine
  * Capability match: +50 (or +25 for partial/general assistance)
- * Available: +25
+ * Availability: +25
+ * Workload: +15 (0 tasks), +10 (1-2 tasks), +5 (3 tasks), Excluded (>= 4 tasks)
  * Distance <= 2 km: +20
  * Distance <= 5 km: +10
  * Distance > 5 km: +0
- * Existing active assignment: exclude candidate
  */
 export function scoreCandidate({
   candidate,
   request,
   requiredType,
   requiredCapability,
-  hasActiveAssignment = false
+  activeTasksCount = 0
 }) {
   const scoreBreakdown = {
     capability: 0,
     availability: 0,
+    workload: 0,
     distance: 0
   };
 
-  // Rule 5: Active assignment excludes candidate
-  if (hasActiveAssignment || (candidate.active_assignments_count && candidate.active_assignments_count > 0)) {
+  // Rule: Maximum 4 active tasks per volunteer/responder
+  const totalActive = activeTasksCount || candidate.active_assignments_count || 0;
+  if (totalActive >= 4) {
     return {
       matching_score: 0,
       is_excluded: true,
-      exclusion_reason: 'Active assignment already in progress',
+      exclusion_reason: 'Active task limit reached (4/4)',
       score_breakdown: scoreBreakdown,
       capability_match: false,
       distance_km: null
     };
+  }
+
+  // Workload scoring (fewer active tasks rewarded)
+  if (totalActive === 0) {
+    scoreBreakdown.workload = 15;
+  } else if (totalActive <= 2) {
+    scoreBreakdown.workload = 10;
+  } else {
+    scoreBreakdown.workload = 5;
   }
 
   // 1. Capability Matching (+50 full, +25 partial)
@@ -184,7 +200,7 @@ export function scoreCandidate({
   }
 
   // Total matching score
-  const totalScore = scoreBreakdown.capability + scoreBreakdown.availability + scoreBreakdown.distance;
+  const totalScore = scoreBreakdown.capability + scoreBreakdown.availability + scoreBreakdown.workload + scoreBreakdown.distance;
 
   return {
     matching_score: totalScore,
@@ -194,7 +210,113 @@ export function scoreCandidate({
     partial_match: partialMatch,
     availability: isAvailable,
     distance_km: distanceKm,
+    active_tasks: totalActive,
     score_breakdown: scoreBreakdown
+  };
+}
+
+/**
+ * Intelligent Automatic Volunteer Assignment for RESOURCE requests.
+ * Evaluates capability compatibility, availability, 4-task workload limit, and real GPS distance.
+ */
+export function findBestVolunteerForResourceRequest(request, volunteers = [], activeAssignmentsMap = {}) {
+  const requiredCapability = determineRequiredCapability(request);
+  const reqLat = Number(request.latitude);
+  const reqLon = Number(request.longitude);
+
+  const evaluated = volunteers.map(vol => {
+    const activeTasks = activeAssignmentsMap[vol.id] || activeAssignmentsMap[vol.user_id] || vol.active_tasks || vol.activeTasks || 0;
+    const caps = (vol.capabilities || []).map(c => c.toUpperCase());
+    
+    const isExactMatch = caps.includes(requiredCapability.toUpperCase());
+    const isGeneralMatch = caps.includes('GENERAL_ASSISTANCE') || caps.includes('RESCUE_SUPPORT');
+    const hasCapability = isExactMatch || isGeneralMatch;
+
+    const isAvailable = vol.is_available !== false;
+    const candLat = Number(vol.latitude);
+    const candLon = Number(vol.longitude);
+    const distanceKm = calculateDistanceKm(reqLat, reqLon, candLat, candLon);
+    const isOverloaded = activeTasks >= 4;
+
+    return {
+      volunteer: vol,
+      id: vol.id,
+      name: vol.name || vol.full_name || 'Volunteer',
+      phone: vol.phone || '',
+      isAvailable,
+      activeTasks,
+      isOverloaded,
+      isExactMatch,
+      isGeneralMatch,
+      hasCapability,
+      distanceKm,
+      hasValidLocation: distanceKm !== null
+    };
+  });
+
+  // Filter candidates who meet capability, are available, have valid GPS, and are under 4 tasks
+  const eligible = evaluated.filter(c => c.hasCapability && c.isAvailable && !c.isOverloaded && c.hasValidLocation);
+
+  // Sorting Priority:
+  // 1. Exact capability match first
+  // 2. Active tasks count ascending (fewer active tasks prioritized)
+  // 3. Distance ascending (closer prioritized)
+  eligible.sort((a, b) => {
+    if (a.isExactMatch && !b.isExactMatch) return -1;
+    if (!a.isExactMatch && b.isExactMatch) return 1;
+    if (a.activeTasks !== b.activeTasks) return a.activeTasks - b.activeTasks;
+    return (a.distanceKm || 9999) - (b.distanceKm || 9999);
+  });
+
+  if (eligible.length > 0) {
+    const best = eligible[0];
+    const matchTypeStr = best.isExactMatch ? `Exact ${requiredCapability} match` : `General relief match`;
+    
+    // Check if a closer volunteer was excluded due to 4 tasks limit
+    const closerOverloaded = evaluated.find(c => 
+      c.hasCapability && 
+      c.isAvailable && 
+      c.isOverloaded && 
+      c.distanceKm !== null && 
+      best.distanceKm !== null && 
+      c.distanceKm < best.distanceKm
+    );
+
+    let explanation = '';
+    if (closerOverloaded) {
+      explanation = `Nearest volunteer (${closerOverloaded.name}, ${closerOverloaded.distanceKm} km) excluded because active task limit reached (4/4). Auto-assigned to next nearest eligible candidate ${best.name} (${matchTypeStr}, ${best.distanceKm} km, ${best.activeTasks}/4 active tasks).`;
+    } else {
+      explanation = `AUTO — NEAREST AVAILABLE VOLUNTEER: Assigned to ${best.name} (${matchTypeStr}, ${best.distanceKm} km distance, ${best.activeTasks}/4 active tasks).`;
+    }
+
+    return {
+      volunteer: best.volunteer,
+      bestVolunteer: best.volunteer,
+      explanation,
+      distance_km: best.distanceKm,
+      active_tasks: best.activeTasks,
+      skippedBusyCount: evaluated.filter(c => c.isOverloaded).length,
+      is_assigned: true
+    };
+  }
+
+  // If no candidate is eligible, check if workload limit is the cause
+  const matchingOverloaded = evaluated.filter(c => c.hasCapability && c.isAvailable && c.isOverloaded);
+  let explanation = '';
+  if (matchingOverloaded.length > 0) {
+    explanation = 'No available volunteer within current workload limit (All eligible nearby volunteers are at maximum capacity: 4/4 active tasks).';
+  } else {
+    explanation = `PENDING — NO AVAILABLE VOLUNTEER (No active volunteers found with ${requiredCapability} capability in sector).`;
+  }
+
+  return {
+    volunteer: null,
+    bestVolunteer: null,
+    explanation,
+    distance_km: null,
+    active_tasks: null,
+    skippedBusyCount: matchingOverloaded.length,
+    is_assigned: false
   };
 }
 
@@ -206,17 +328,14 @@ export function matchRequestCandidates(request, candidates = [], activeAssignmen
   const requiredCapability = determineRequiredCapability(request);
 
   const scoredCandidates = candidates.map(cand => {
-    const hasActive = Boolean(
-      activeAssignmentsMap[cand.id] ||
-      (cand.active_assignments_count && cand.active_assignments_count > 0)
-    );
+    const activeTasksCount = activeAssignmentsMap[cand.id] || activeAssignmentsMap[cand.user_id] || cand.active_assignments_count || 0;
 
     const scoreResult = scoreCandidate({
       candidate: cand,
       request,
       requiredType,
       requiredCapability,
-      hasActiveAssignment: hasActive
+      activeTasksCount
     });
 
     return {

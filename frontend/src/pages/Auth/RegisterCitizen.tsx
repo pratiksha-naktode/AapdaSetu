@@ -58,12 +58,14 @@ export const RegisterCitizen: React.FC = () => {
         throw new Error(data.error || 'Failed to register citizen account.');
       }
 
-      setSuccess('Account created successfully! Logging you in...');
-      // Authenticate and redirect to /citizen
-      await login(email.trim(), password, 'CITIZEN');
+      // Ensure no leftover active session exists
+      localStorage.removeItem('varahi_auth_token');
+      localStorage.removeItem('varahi_auth_user');
+
+      setSuccess('Account created successfully! Please log in to continue.');
       setTimeout(() => {
-        navigate('/citizen', { replace: true });
-      }, 600);
+        navigate('/citizen/login', { replace: true });
+      }, 1800);
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.');
     } finally {

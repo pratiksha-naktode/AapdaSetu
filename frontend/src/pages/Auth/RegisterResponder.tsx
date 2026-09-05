@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
-import { Shield, Lock, Mail, User, Phone, Award, AlertCircle, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { Shield, Lock, Mail, User, Phone, Award, AlertCircle, ArrowLeft, CheckCircle2, RefreshCw } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const RESPONDER_TYPES = [
   { value: 'RESCUE_TEAM', label: 'Disaster Rescue Team (NDRF / SDRF)' },
@@ -18,23 +19,34 @@ export const RegisterResponder: React.FC = () => {
   const [badgeNumber, setBadgeNumber] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [registeredPending, setRegisteredPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError(null);
+    setSuccess(null);
 
-    if (password !== confirmPassword) {
-      setError('Passwords do not match.');
+    if (!name.trim()) {
+      setError('Please enter commander or official contact name.');
+      return;
+    }
+
+    if (!email.trim()) {
+      setError('Please enter official unit email address.');
       return;
     }
 
     if (password.length < 6) {
-      setError('Password must be at least 6 characters.');
+      setError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
       return;
     }
 
@@ -43,234 +55,314 @@ export const RegisterResponder: React.FC = () => {
       return;
     }
 
-    setIsLoading(true);
+    setLoading(true);
 
     try {
-      const response = await fetch('/api/auth/register/responder', {
+      const response = await fetch(`${API_BASE}/api/auth/register/responder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name,
-          email,
-          phone,
+          name: name.trim(),
+          email: email.trim(),
+          phone: phone.trim() || null,
           password,
           responder_type: responderType,
-          badge_number: badgeNumber,
+          badge_number: badgeNumber.trim() || null,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.message || 'Registration failed.');
+        throw new Error(data.error || data.message || 'Registration failed.');
       }
 
-      setRegisteredPending(true);
+      // Ensure no active session remains from signup
+      localStorage.removeItem('varahi_auth_token');
+      localStorage.removeItem('varahi_auth_user');
+
+      setSuccess('Responder credentials submitted successfully! Please sign in to your unit portal.');
+
+      setTimeout(() => {
+        navigate('/responder/login', { replace: true });
+      }, 1800);
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
   return (
-    <div className="auth-page min-h-[calc(100vh-4rem)] flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-slate-900">
-      <div className="max-w-md w-full space-y-8 bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-2xl">
-        <div className="text-center">
-          <Link
-            to="/responder/login"
-            className="inline-flex items-center text-xs text-slate-400 hover:text-blue-400 mb-6 transition-colors"
+    <div style={{ maxWidth: '520px', margin: '2.5rem auto', padding: '0 1rem' }}>
+      <div style={{ marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Link
+          to="/responder/login"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            color: 'var(--text-secondary)',
+            fontSize: '0.85rem',
+            textDecoration: 'none'
+          }}
+        >
+          <ArrowLeft size={16} /> Back to Responder Login
+        </Link>
+        <span style={{
+          fontSize: '0.72rem',
+          fontWeight: 800,
+          background: 'rgba(2, 132, 199, 0.15)',
+          color: '#0284c7',
+          border: '1px solid rgba(2, 132, 199, 0.3)',
+          padding: '0.15rem 0.5rem',
+          borderRadius: '9999px',
+          textTransform: 'uppercase'
+        }}>
+          OFFICIAL ONBOARDING
+        </span>
+      </div>
+
+      <div className="card" style={{ padding: '2.25rem', border: '1px solid var(--border-color)', boxShadow: '0 12px 32px rgba(0,0,0,0.35)' }}>
+        <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
+          <div
+            style={{
+              width: '52px',
+              height: '52px',
+              borderRadius: 'var(--radius-md)',
+              background: 'rgba(2, 132, 199, 0.15)',
+              border: '1px solid rgba(2, 132, 199, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 0.75rem',
+              color: '#0284c7'
+            }}
           >
-            <ArrowLeft className="w-3.5 h-3.5 mr-1" />
-            Back to Responder Login
-          </Link>
-
-          <div className="inline-flex items-center justify-center p-3 bg-blue-500/10 rounded-xl mb-4 text-blue-400 border border-blue-500/20">
-            <Shield className="w-8 h-8" />
+            <Shield size={28} color="#0284c7" />
           </div>
-
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">
-            Responder Onboarding
-          </h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Register your official agency or rescue unit credentials
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 800 }}>Responder Unit Onboarding</h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+            Register your official rescue, medical, or police response unit
           </p>
         </div>
 
-        {registeredPending ? (
-          <div className="bg-blue-950/40 border border-blue-600/40 rounded-xl p-6 text-center space-y-4">
-            <div className="w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mx-auto">
-              <CheckCircle2 className="w-7 h-7" />
+        {error && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.5rem',
+              padding: '0.75rem 1rem',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid #ef4444',
+              color: '#fca5a5',
+              fontSize: '0.85rem',
+              lineHeight: 1.4,
+              marginBottom: '1.25rem'
+            }}
+          >
+            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {success && (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem',
+              padding: '1rem',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid #10b981',
+              color: '#86efac',
+              fontSize: '0.88rem',
+              marginBottom: '1.25rem',
+              textAlign: 'center'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontWeight: 700 }}>
+              <CheckCircle2 size={18} />
+              <span>{success}</span>
             </div>
-            <h3 className="text-lg font-bold text-white">Application Submitted</h3>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Your responder profile has been submitted for duty verification. Once approved by the Disaster Command Center, your unit will receive active deployment dispatches.
-            </p>
-            <div className="pt-2">
-              <button
-                onClick={() => navigate('/responder/login')}
-                className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition-colors"
-              >
-                Go to Responder Login
-              </button>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              Redirecting to Responder Login...
             </div>
           </div>
-        ) : (
-          <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
-            {error && (
-              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-3 text-red-400 text-sm">
-                <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Full Name / Commander Name
-                </label>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="text"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="e.g. Commander Rajesh"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Official Email Address
-                </label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="official.unit@agency.gov.in"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Emergency Contact Phone
-                </label>
-                <div className="relative">
-                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="tel"
-                    required
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="+91 98765 43210"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Unit / Responder Type
-                </label>
-                <select
-                  value={responderType}
-                  onChange={(e) => setResponderType(e.target.value)}
-                  className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                >
-                  {RESPONDER_TYPES.map((t) => (
-                    <option key={t.value} value={t.value} className="bg-slate-800 text-white">
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Badge ID / Unit Registration No.
-                </label>
-                <div className="relative">
-                  <Award className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="text"
-                    value={badgeNumber}
-                    onChange={(e) => setBadgeNumber(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="NDRF-BN10-4421"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="••••••••"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Confirm Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="password"
-                    required
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                    placeholder="••••••••"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm transition duration-200 shadow-lg shadow-blue-500/20 disabled:opacity-50 flex items-center justify-center gap-2 mt-6"
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  <span>Submitting Credentials...</span>
-                </>
-              ) : (
-                'Register Responder Unit'
-              )}
-            </button>
-
-            <div className="text-center pt-2">
-              <span className="text-xs text-slate-400">Already registered? </span>
-              <Link
-                to="/responder/login"
-                className="text-xs text-blue-400 hover:text-blue-300 font-semibold"
-              >
-                Sign in to Unit Portal
-              </Link>
-            </div>
-          </form>
         )}
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+          <div className="form-group">
+            <label className="form-label" htmlFor="commander-name">
+              Full Name / Unit Commander Name
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <User size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="commander-name"
+                type="text"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="e.g. Commander Rajesh Kumar"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="responder-email">
+              Official Email Address
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Mail size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="responder-email"
+                type="email"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="official.unit@agency.gov.in"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="responder-phone">
+              Emergency Contact Phone
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Phone size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="responder-phone"
+                type="tel"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="+91 98765 43210"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="responder-type">
+              Unit / Responder Type
+            </label>
+            <select
+              id="responder-type"
+              className="form-input"
+              value={responderType}
+              onChange={(e) => setResponderType(e.target.value)}
+            >
+              {RESPONDER_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="badge-number">
+              Badge ID / Unit Registration No.
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Award size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="badge-number"
+                type="text"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="e.g. NDRF-BN10-4421"
+                value={badgeNumber}
+                onChange={(e) => setBadgeNumber(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="resp-password">
+              Password (minimum 6 characters)
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Lock size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="resp-password"
+                type="password"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="••••••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="resp-confirm-password">
+              Confirm Password
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Lock size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '12px' }} />
+              <input
+                id="resp-confirm-password"
+                type="password"
+                className="form-input"
+                style={{ paddingLeft: '2.25rem' }}
+                placeholder="••••••••••••"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="btn btn-primary"
+            style={{
+              width: '100%',
+              padding: '0.75rem',
+              fontSize: '0.95rem',
+              fontWeight: 700,
+              marginTop: '0.5rem',
+              background: '#0284c7',
+              gap: '0.5rem'
+            }}
+          >
+            {loading ? (
+              <>
+                <RefreshCw size={16} className="spin" /> Submitting Credentials...
+              </>
+            ) : (
+              'Register Responder Unit'
+            )}
+          </button>
+        </form>
+
+        <div style={{ marginTop: '1.5rem', textAlign: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+            Already registered?{' '}
+            <Link
+              to="/responder/login"
+              style={{ color: '#0284c7', fontWeight: 700, textDecoration: 'none' }}
+            >
+              Sign in to Responder Portal
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );
 };
+
+export default RegisterResponder;
