@@ -10,9 +10,15 @@ export const CitizenProfile: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form State
-  const [fullName, setFullName] = useState<string>(user?.full_name || 'Citizen User');
-  const [phone, setPhone] = useState<string>(user?.phone || '+919876543221');
-  const [email, setEmail] = useState<string>(user?.email || 'citizen@varahi.org');
+  const [fullName, setFullName] = useState<string>(user?.full_name || '');
+  const [phone, setPhone] = useState<string>(user?.phone || '');
+  const [email, setEmail] = useState<string>(user?.email || '');
+
+  React.useEffect(() => {
+    if (user?.full_name) setFullName(user.full_name);
+    if (user?.phone) setPhone(user.phone);
+    if (user?.email) setEmail(user.email);
+  }, [user]);
 
   // Upload States
   const [isUploading, setIsUploading] = useState<boolean>(false);
@@ -23,6 +29,14 @@ export const CitizenProfile: React.FC = () => {
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!user?.id) {
+      setUploadStatus({
+        type: 'error',
+        message: 'Authentication required. Please log in to upload your profile photo.'
+      });
+      return;
+    }
 
     setUploadStatus(null);
 
@@ -106,6 +120,10 @@ export const CitizenProfile: React.FC = () => {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user?.id) {
+      alert('You must be logged in to save profile changes.');
+      return;
+    }
     setIsSaving(true);
     setSaveSuccess(false);
 
@@ -123,6 +141,28 @@ export const CitizenProfile: React.FC = () => {
       setIsSaving(false);
     }
   };
+
+  if (!user) {
+    return (
+      <div style={{ maxWidth: '680px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        <Link to="/citizen" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+          <ArrowLeft size={16} /> Back to Citizen Portal
+        </Link>
+        <div className="card" style={{ padding: '2.5rem', textAlign: 'center' }}>
+          <User size={48} color="#3b82f6" style={{ margin: '0 auto 1rem' }} />
+          <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>No Active Citizen Session</h2>
+          <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem', fontSize: '0.9rem' }}>
+            Please sign in with your registered email to view and manage your profile, contact details, and persistent profile photo.
+          </p>
+          <div style={{ marginTop: '1.5rem' }}>
+            <Link to="/login" className="btn btn-primary" style={{ display: 'inline-flex', padding: '0.6rem 1.5rem', fontSize: '0.9rem' }}>
+              Sign In to Your Account
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Get initials for fallback avatar
   const initials = (user?.full_name || 'Citizen')

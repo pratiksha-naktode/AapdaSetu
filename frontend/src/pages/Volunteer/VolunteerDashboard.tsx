@@ -3,23 +3,35 @@ import { api } from '../../services/api';
 import { EmergencyRequest, VolunteerCapability } from '../../types';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
 import { HeartHandshake, CheckCircle } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 
 export const VolunteerDashboard: React.FC = () => {
+  const { user } = useAuth();
   const [requests, setRequests] = useState<EmergencyRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Active Volunteer Profile (Ramesh Varma - Medicine & First Aid)
+  // Active Volunteer Profile from authenticated session (with development fallback)
   const [activeVolunteer, setActiveVolunteer] = useState<{
     id: string;
     name: string;
     capabilities: VolunteerCapability[];
     vehicle: string;
-  }>({
-    id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1',
-    name: 'Ramesh Varma',
-    capabilities: ['MEDICINE', 'FIRST_AID'],
+  }>(() => ({
+    id: (user?.role === 'VOLUNTEER' ? user?.id : null) || 'dev-volunteer-alpha',
+    name: (user?.role === 'VOLUNTEER' ? user?.full_name : null) || 'Volunteer Dispatch',
+    capabilities: ['MEDICINE', 'FIRST_AID'] as VolunteerCapability[],
     vehicle: 'Two Wheeler'
-  });
+  }));
+
+  useEffect(() => {
+    if (user?.role === 'VOLUNTEER') {
+      setActiveVolunteer(prev => ({
+        ...prev,
+        id: user.id || prev.id,
+        name: user.full_name || prev.name
+      }));
+    }
+  }, [user]);
 
   const availableCaps: VolunteerCapability[] = [
     'MEDICINE',
@@ -131,11 +143,21 @@ export const VolunteerDashboard: React.FC = () => {
 
       {/* Requests Feed */}
       <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Nearby Matching Relief Requests</h2>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            {requests.length} open requests
-          </span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Nearby Matching Relief Requests</h2>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.1rem' }}>
+              Showing requests filtered for your registered capabilities: <strong>{activeVolunteer.capabilities.join(', ') || 'None selected'}</strong>
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.85rem', color: '#c084fc', fontWeight: 700 }}>
+              {requests.filter(req => {
+                const reqCap = (req.matching?.required_capability || req.requested_resource || req.category || '').toUpperCase();
+                return activeVolunteer.capabilities.some(c => reqCap.includes(c) || c.includes(reqCap) || c === 'GENERAL_ASSISTANCE');
+              }).length} matching tasks
+            </span>
+          </div>
         </div>
 
         {loading ? (
@@ -143,8 +165,8 @@ export const VolunteerDashboard: React.FC = () => {
         ) : requests.length === 0 ? (
           <div className="card" style={{ textAlign: 'center', padding: '3.5rem', color: 'var(--text-secondary)' }}>
             <HeartHandshake size={48} color="#a855f7" style={{ margin: '0 auto 1rem' }} />
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff' }}>No nearby resource requests</h3>
-            <p style={{ marginTop: '0.4rem', fontSize: '0.9rem' }}>Matching resource requests will appear here when citizens request assistance.</p>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff' }}>No resource requests found</h3>
+            <p style={{ marginTop: '0.4rem', fontSize: '0.9rem' }}>Citizen supply requests will appear here dynamically.</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -152,12 +174,25 @@ export const VolunteerDashboard: React.FC = () => {
               const isAssignedToMe = req.assigned_to?.id === activeVolunteer.id;
               const isResolved = req.status === 'RESOLVED';
 
-              // Capability matching check
-              const reqCategory = (req.category || '').toUpperCase();
-              const reqRes = (req.requested_resource || '').toUpperCase();
+              // Capability matching check (Rule 11)
+              const reqCap = (req.matching?.required_capability || req.requested_resource || req.category || '').toUpperCase();
               const isMatch = activeVolunteer.capabilities.some(c => 
-                reqCategory.includes(c) || reqRes.includes(c) || c === 'GENERAL_ASSISTANCE'
+                reqCap.includes(c) || c.includes(reqCap) || c === 'GENERAL_ASSISTANCE'
               );
+
+              // Dynamic distance calculation from Bhimavaram center or matching candidate
+              let distanceText = 'Distance unknown';
+              if (req.latitude && req.longitude) {
+                const vLat = 16.5440;
+                const vLon = 81.5230;
+                const dLat = (req.latitude - vLat) * Math.PI / 180;
+                const dLon = (req.longitude - vLon) * Math.PI / 180;
+                const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                  Math.cos(vLat * Math.PI / 180) * Math.cos(req.latitude * Math.PI / 180) *
+                  Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                const dist = Math.round(6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10;
+                distanceText = `~${dist} km away`;
+              }
 
               return (
                 <div
@@ -165,18 +200,26 @@ export const VolunteerDashboard: React.FC = () => {
                   className={`card card-${req.priority_level.toLowerCase()}`}
                   style={{
                     padding: '1.25rem',
-                    opacity: isResolved ? 0.6 : 1,
-                    background: isMatch && !isResolved ? 'rgba(168, 85, 247, 0.05)' : 'var(--bg-card)'
+                    opacity: isResolved ? 0.6 : (isMatch ? 1 : 0.55),
+                    background: isMatch && !isResolved ? 'rgba(168, 85, 247, 0.05)' : 'var(--bg-card)',
+                    borderLeft: isMatch ? '4px solid #a855f7' : '1px solid var(--border-color)'
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
                     <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem', flexWrap: 'wrap' }}>
                         <PriorityBadge level={req.priority_level} score={req.priority_score} />
                         <StatusBadge status={req.status} />
-                        {isMatch && (
+                        <span style={{ fontSize: '0.72rem', background: '#3b82f6', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: 'var(--radius-sm)', fontWeight: 700, textTransform: 'uppercase' }}>
+                          SUPPLY NEED: {req.matching?.required_capability || req.requested_resource || req.category}
+                        </span>
+                        {isMatch ? (
                           <span style={{ fontSize: '0.7rem', background: '#9333ea', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: '9999px', fontWeight: 700 }}>
-                            CAPABILITY MATCH
+                            ✓ MATCHES YOUR CAPABILITY
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', background: '#475569', color: '#cbd5e1', padding: '0.15rem 0.5rem', borderRadius: '9999px', fontWeight: 600 }}>
+                            NOT RECOMMENDED (CAPABILITY MISMATCH)
                           </span>
                         )}
                       </div>
@@ -190,8 +233,8 @@ export const VolunteerDashboard: React.FC = () => {
                     </div>
 
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '0.85rem', color: '#c084fc', fontWeight: 700 }}>
-                        ~1.2 km away
+                      <div style={{ fontSize: '0.85rem', color: isMatch ? '#c084fc' : 'var(--text-muted)', fontWeight: 700 }}>
+                        {distanceText}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         {new Date(req.created_at).toLocaleTimeString()}
@@ -210,12 +253,12 @@ export const VolunteerDashboard: React.FC = () => {
                       {req.assigned_to ? (
                         <span>Assigned to: <strong style={{ color: '#fff' }}>{req.assigned_to.name}</strong></span>
                       ) : (
-                        <span>Ready for volunteer dispatch</span>
+                        <span>{isMatch ? 'Ready for volunteer dispatch' : 'Outside your selected skill set'}</span>
                       )}
                     </div>
 
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      {!req.assigned_to && !isResolved && (
+                      {!req.assigned_to && !isResolved && isMatch && (
                         <button
                           onClick={() => handleAccept(req.id)}
                           className="btn btn-primary"

@@ -21,20 +21,25 @@ export async function calculatePriority(requestData) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(3500)
     });
 
     if (response.ok) {
       const data = await response.json();
-      return {
-        priority_score: data.score,
-        priority_level: data.priority,
-        priority_reason: data.reason,
-        recommended_responder: data.recommended_responder,
-        factors_breakdown: data.factors_breakdown
-      };
+      if (data && typeof data.score === 'number' && data.priority && data.reason) {
+        return {
+          priority_score: data.score,
+          priority_level: data.priority,
+          priority_reason: data.reason,
+          recommended_responder: data.recommended_responder || (payload.request_type === 'emergency' ? 'RESCUE_TEAM' : 'VOLUNTEER'),
+          factors_breakdown: data.factors_breakdown || {}
+        };
+      }
+    } else {
+      console.warn(`[PriorityService] FastAPI returned HTTP ${response.status}: ${response.statusText}. Using fallback rule engine.`);
     }
   } catch (err) {
-    console.warn(`[PriorityService] FastAPI Priority Engine at ${config.fastApiUrl} unavailable. Using fallback rule engine:`, err.message);
+    console.warn(`[PriorityService] FastAPI Priority Engine at ${config.fastApiUrl} unavailable or timed out (${err.message}). Using fallback rule engine.`);
   }
 
   // Resilient fallback rule evaluation

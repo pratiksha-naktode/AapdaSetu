@@ -3,8 +3,8 @@ import { repository } from '../store/repository.js';
 
 const router = express.Router();
 
-router.get('/statistics', (req, res) => {
-  const stats = repository.getStats();
+router.get('/statistics', async (req, res) => {
+  const stats = await repository.getStats();
   res.json({ statistics: stats });
 });
 

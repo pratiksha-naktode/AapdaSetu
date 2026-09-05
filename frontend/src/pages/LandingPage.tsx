@@ -1,12 +1,15 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { ShieldAlert, AlertTriangle, Package, MapPin, Users, HeartHandshake, ShieldCheck, ArrowRight, Cpu, Radio, WifiOff } from 'lucide-react';
 
 interface Props {
-  onSelectRole: (role: any) => void;
+  onSelectRole?: (role: any) => void;
 }
 
-export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
+export const LandingPage: React.FC<Props> = () => {
+  const { user, isAuthenticated } = useAuth();
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '3rem', maxWidth: '1200px', margin: '0 auto' }}>
       {/* Hero Section */}
@@ -33,14 +36,13 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
       {/* 4 Role Entry Cards */}
       <div>
         <h2 style={{ fontSize: '1.3rem', fontWeight: 800, textAlign: 'center', marginBottom: '1.5rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Select User Role Portal to Explore
+          Select User Role Portal
         </h2>
 
         <div className="grid-4">
           {/* Citizen */}
           <Link
-            to="/citizen"
-            onClick={() => onSelectRole('CITIZEN')}
+            to={isAuthenticated && user?.role === 'CITIZEN' ? '/citizen' : '/citizen/login'}
             style={{ textDecoration: 'none' }}
           >
             <div className="card card-critical" style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer', transition: 'transform 0.2s', padding: '1.75rem' }}>
@@ -54,15 +56,14 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#ef4444', fontWeight: 700, fontSize: '0.85rem', marginTop: '1.5rem' }}>
-                <span>Launch Portal</span> <ArrowRight size={14} />
+                <span>{isAuthenticated && user?.role === 'CITIZEN' ? 'Open Dashboard' : 'Citizen Login'}</span> <ArrowRight size={14} />
               </div>
             </div>
           </Link>
 
           {/* Responder */}
           <Link
-            to="/responder"
-            onClick={() => onSelectRole('RESPONDER')}
+            to={isAuthenticated && user?.role === 'RESPONDER' ? '/responder' : '/responder/login'}
             style={{ textDecoration: 'none' }}
           >
             <div className="card card-high" style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer', transition: 'transform 0.2s', padding: '1.75rem' }}>
@@ -76,15 +77,14 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#3b82f6', fontWeight: 700, fontSize: '0.85rem', marginTop: '1.5rem' }}>
-                <span>Launch Portal</span> <ArrowRight size={14} />
+                <span>{isAuthenticated && user?.role === 'RESPONDER' ? 'Open Dashboard' : 'Responder Login'}</span> <ArrowRight size={14} />
               </div>
             </div>
           </Link>
 
           {/* Volunteer */}
           <Link
-            to="/volunteer"
-            onClick={() => onSelectRole('VOLUNTEER')}
+            to={isAuthenticated && user?.role === 'VOLUNTEER' ? '/volunteer' : '/volunteer/login'}
             style={{ textDecoration: 'none' }}
           >
             <div className="card" style={{ borderLeft: '4px solid #a855f7', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer', transition: 'transform 0.2s', padding: '1.75rem' }}>
@@ -98,15 +98,14 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#a855f7', fontWeight: 700, fontSize: '0.85rem', marginTop: '1.5rem' }}>
-                <span>Launch Portal</span> <ArrowRight size={14} />
+                <span>{isAuthenticated && user?.role === 'VOLUNTEER' ? 'Open Dashboard' : 'Volunteer Login'}</span> <ArrowRight size={14} />
               </div>
             </div>
           </Link>
 
           {/* Admin Command */}
           <Link
-            to="/admin"
-            onClick={() => onSelectRole('ADMIN')}
+            to={isAuthenticated && user?.role === 'ADMIN' ? '/command-center' : '/admin/login'}
             style={{ textDecoration: 'none' }}
           >
             <div className="card" style={{ borderLeft: '4px solid #10b981', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer', transition: 'transform 0.2s', padding: '1.75rem' }}>
@@ -120,14 +119,14 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#10b981', fontWeight: 700, fontSize: '0.85rem', marginTop: '1.5rem' }}>
-                <span>Launch Portal</span> <ArrowRight size={14} />
+                <span>{isAuthenticated && user?.role === 'ADMIN' ? 'Command Center' : 'Admin Login'}</span> <ArrowRight size={14} />
               </div>
             </div>
           </Link>
         </div>
       </div>
 
-      {/* Core Innovation & Architecture USP Highlights */}
+      {/* Core Technical Highlights */}
       <div className="card" style={{ padding: '2rem' }}>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '1.5rem', textAlign: 'center' }}>
           Why Varahi is Different: Core Technical Innovations
@@ -162,3 +161,5 @@ export const LandingPage: React.FC<Props> = ({ onSelectRole }) => {
     </div>
   );
 };
+
+export default LandingPage;

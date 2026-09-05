@@ -2,54 +2,56 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserProfile, UserRole } from '../types';
 
 interface AuthContextType {
-  user: UserProfile;
+  user: UserProfile | null;
+  token: string | null;
+  isAuthenticated: boolean;
   currentRole: UserRole;
   switchRole: (role: UserRole) => void;
   updateAvatar: (avatarUrl: string) => void;
   updateProfile: (updates: Partial<UserProfile>) => Promise<void>;
   refreshProfile: () => Promise<void>;
+  login: (email: string, password?: string, expectedRole?: UserRole) => Promise<UserProfile>;
+  logout: () => void;
 }
-
-const defaultCitizen: UserProfile = {
-  id: 'dddddddd-dddd-dddd-dddd-ddddddddddd1',
-  email: 'citizen@varahi.org',
-  full_name: 'Citizen User',
-  phone: '+919876543221',
-  role: 'CITIZEN',
-  avatar_url: null
-};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile>(() => {
+  const [user, setUser] = useState<UserProfile | null>(() => {
     try {
       const saved = localStorage.getItem('varahi_auth_user');
-      return saved ? JSON.parse(saved) : defaultCitizen;
+      return saved ? JSON.parse(saved) : null;
     } catch {
-      return defaultCitizen;
+      return null;
     }
   });
 
-  const [currentRole, setCurrentRole] = useState<UserRole>(() => {
-    return user?.role || 'ADMIN';
+  const [token, setToken] = useState<string | null>(() => {
+    return localStorage.getItem('varahi_auth_token') || null;
   });
 
-  // Fetch latest profile from backend on mount or when user changes
+  const [currentRole, setCurrentRole] = useState<UserRole>(() => {
+    return user?.role || 'CITIZEN';
+  });
+
+  // Fetch latest profile from backend using stored session ID/token
   const refreshProfile = async () => {
-    if (!user?.id) return;
+    const storedUser = localStorage.getItem('varahi_auth_user');
+    const parsedUser = storedUser ? JSON.parse(storedUser) : null;
+    const userId = user?.id || parsedUser?.id;
+    if (!userId) return;
+
     try {
-      const res = await fetch(`${API_BASE}/api/users/${user.id}`);
+      const res = await fetch(`${API_BASE}/api/users/${userId}`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.user) {
-          setUser(prev => {
-            const updated = { ...prev, ...data.user };
-            localStorage.setItem('varahi_auth_user', JSON.stringify(updated));
-            return updated;
-          });
+          setUser(data.user);
+          localStorage.setItem('varahi_auth_user', JSON.stringify(data.user));
         }
       }
     } catch (err) {
@@ -61,54 +63,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     refreshProfile();
   }, []);
 
-  const switchRole = (newRole: UserRole) => {
-    setCurrentRole(newRole);
-    // Switch active user id appropriately
-    let targetUser = user;
-    if (newRole === 'ADMIN') {
-      targetUser = {
-        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-        email: 'admin@varahi.gov.in',
-        full_name: 'District Control Room',
-        phone: '+919876543200',
-        role: 'ADMIN',
-        avatar_url: null
-      };
-    } else if (newRole === 'RESPONDER') {
-      targetUser = {
-        id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
-        email: 'ndrf.alpha@varahi.gov.in',
-        full_name: 'NDRF Rescue Unit Alpha (Capt. Rajesh)',
-        phone: '+919876543201',
-        role: 'RESPONDER',
-        avatar_url: null
-      };
-    } else if (newRole === 'VOLUNTEER') {
-      targetUser = {
-        id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1',
-        email: 'ramesh.med@volunteer.in',
-        full_name: 'Ramesh Varma',
-        phone: '+919876543211',
-        role: 'VOLUNTEER',
-        avatar_url: null
-      };
-    } else {
-      // Citizen
-      targetUser = {
-        id: 'dddddddd-dddd-dddd-dddd-ddddddddddd1',
-        email: 'citizen@varahi.org',
-        full_name: user.full_name || 'Citizen User',
-        phone: user.phone || '+919876543221',
-        role: 'CITIZEN',
-        avatar_url: user.avatar_url || null
-      };
+  const login = async (email: string, password?: string, expectedRole?: UserRole): Promise<UserProfile> => {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password: password || 'varahi-secure-pass',
+        expected_role: expectedRole
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Login failed: Invalid credentials or server error');
     }
-    setUser(targetUser);
-    localStorage.setItem('varahi_auth_user', JSON.stringify(targetUser));
+    setUser(data.user);
+    setToken(data.token);
+    setCurrentRole(data.user.role || 'CITIZEN');
+    localStorage.setItem('varahi_auth_user', JSON.stringify(data.user));
+    if (data.token) {
+      localStorage.setItem('varahi_auth_token', data.token);
+    }
+    return data.user;
+  };
+
+  const logout = () => {
+    localStorage.removeItem('varahi_auth_user');
+    localStorage.removeItem('varahi_auth_token');
+    setUser(null);
+    setToken(null);
+  };
+
+  const switchRole = (newRole: UserRole) => {
+    // Role selection changes the requested interface/portal.
+    // The authenticated user's identity comes strictly from their authenticated session.
+    setCurrentRole(newRole);
   };
 
   const updateAvatar = (avatarUrl: string) => {
     setUser(prev => {
+      if (!prev) return null;
       const updated = { ...prev, avatar_url: avatarUrl };
       localStorage.setItem('varahi_auth_user', JSON.stringify(updated));
       return updated;
@@ -116,6 +110,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateProfile = async (updates: Partial<UserProfile>) => {
+    if (!user?.id) throw new Error('No active user session');
     const updated = { ...user, ...updates };
     setUser(updated);
     localStorage.setItem('varahi_auth_user', JSON.stringify(updated));
@@ -123,7 +118,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await fetch(`${API_BASE}/api/users/${user.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(updates)
       });
     } catch (err) {
@@ -135,11 +133,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
+        token,
+        isAuthenticated: Boolean(user && user.id),
         currentRole,
         switchRole,
         updateAvatar,
         updateProfile,
-        refreshProfile
+        refreshProfile,
+        login,
+        logout
       }}
     >
       {children}

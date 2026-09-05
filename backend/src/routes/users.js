@@ -19,8 +19,8 @@ const router = express.Router();
  * GET /api/users/:id
  * Fetch user profile
  */
-router.get('/:id', (req, res) => {
-  const user = repository.getUserById(req.params.id);
+router.get('/:id', async (req, res) => {
+  const user = await repository.getUserById(req.params.id);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -31,9 +31,9 @@ router.get('/:id', (req, res) => {
  * PUT /api/users/:id
  * Update user profile
  */
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { full_name, phone, email } = req.body;
-  const updated = repository.updateUserProfile(req.params.id, {
+  const updated = await repository.updateUserProfile(req.params.id, {
     full_name,
     phone,
     email
@@ -96,7 +96,9 @@ router.post('/:id/avatar', async (req, res) => {
           const { data: publicUrlData } = supabase.storage
             .from('profile-images')
             .getPublicUrl(fileName);
-          avatarUrl = publicUrlData.publicUrl;
+          avatarUrl = `${publicUrlData.publicUrl}?t=${Date.now()}`;
+        } else {
+          console.warn('[Avatar] Supabase storage upload warning:', uploadError.message);
         }
       } catch (storageErr) {
         console.warn('[Avatar] Supabase storage upload failed, falling back to local persistent store:', storageErr.message);
@@ -112,7 +114,7 @@ router.post('/:id/avatar', async (req, res) => {
     }
 
     // Persist in repository
-    const updatedUser = repository.updateUserProfile(userId, { avatar_url: avatarUrl });
+    const updatedUser = await repository.updateUserProfile(userId, { avatar_url: avatarUrl });
 
     console.log(`[Avatar] Successfully updated avatar for user ${userId}: ${avatarUrl}`);
     return res.json({

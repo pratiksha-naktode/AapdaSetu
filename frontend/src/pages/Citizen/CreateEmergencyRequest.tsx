@@ -43,27 +43,28 @@ export const CreateEmergencyRequest: React.FC<Props> = ({ isSimulatedOffline }) 
     reason?: string;
   } | null>(null);
 
+  const [locationError, setLocationError] = useState<string | null>(null);
+
   const fetchCurrentLocation = () => {
     setIsFetchingGps(true);
+    setLocationError(null);
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           setLatitude(pos.coords.latitude);
           setLongitude(pos.coords.longitude);
-          setAddress(`GPS Lat: ${pos.coords.latitude.toFixed(4)}, Lon: ${pos.coords.longitude.toFixed(4)} (Bhimavaram Sector)`);
+          setAddress(`GPS Lat: ${pos.coords.latitude.toFixed(4)}, Lon: ${pos.coords.longitude.toFixed(4)}`);
           setIsFetchingGps(false);
         },
         (err) => {
           console.warn('Geolocation error or denied:', err.message);
-          // Fallback to Bhimavaram Flood Ward coordinates
-          setLatitude(16.5455);
-          setLongitude(81.5195);
-          setAddress('Mavullamma Temple Ward 8, Bhimavaram (Auto-selected)');
+          setLocationError('Location permission unavailable or denied. Please enter your coordinates and address manually.');
           setIsFetchingGps(false);
         },
         { timeout: 8000 }
       );
     } else {
+      setLocationError('Geolocation is not supported by your browser. Please enter your coordinates manually.');
       setIsFetchingGps(false);
     }
   };
@@ -347,6 +348,12 @@ export const CreateEmergencyRequest: React.FC<Props> = ({ isSimulatedOffline }) 
                 {isFetchingGps ? 'Fetching GPS...' : 'Auto-Capture My GPS'}
               </button>
             </div>
+
+            {locationError && (
+              <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.75rem', fontSize: '0.8rem', color: '#fca5a5', marginBottom: '0.75rem' }}>
+                {locationError}
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
               <div>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Latitude</span>

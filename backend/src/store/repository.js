@@ -1,11 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
+import { 
+  matchRequestCandidates, 
+  determineRequiredResponderType, 
+  determineRequiredCapability 
+} from '../services/matchingService.js';
 
 let supabase = null;
-if (config.supabase.url && config.supabase.anonKey) {
+if (config.supabase.url && (config.supabase.serviceRoleKey || config.supabase.anonKey)) {
   try {
-    supabase = createClient(config.supabase.url, config.supabase.anonKey);
+    const key = config.supabase.serviceRoleKey || config.supabase.anonKey;
+    supabase = createClient(config.supabase.url, key);
     console.log('[Repository] Connected to Supabase PostgreSQL at:', config.supabase.url);
   } catch (err) {
     console.warn('[Repository] Failed to connect to Supabase, running local in-memory store:', err.message);
@@ -138,29 +144,142 @@ export const repository = {
     };
   },
 
-  getResponders() {
+  async getResponders() {
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('responders')
+          .select('*, users(id, full_name, phone, email, avatar_url, role)');
+        if (!error && data && data.length > 0) {
+          return data.map(r => ({
+            id: r.id,
+            user_id: r.id,
+            name: r.users?.full_name || 'Rescue Personnel',
+            phone: r.users?.phone || '',
+            email: r.users?.email || '',
+            avatar_url: r.users?.avatar_url || null,
+            badge_number: r.badge_number,
+            responder_type: r.responder_type,
+            latitude: Number(r.latitude),
+            longitude: Number(r.longitude),
+            is_available: r.is_available !== false,
+            active_assignments_count: r.active_assignments_count || 0
+          }));
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getResponders error, using fallback:', err.message);
+      }
+    }
     return memoryStore.responders;
   },
 
-  getVolunteers() {
+  async getVolunteers() {
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('volunteers')
+          .select('*, users(id, full_name, phone, email, avatar_url, role), volunteer_capabilities(capability)');
+        if (!error && data && data.length > 0) {
+          return data.map(v => ({
+            id: v.id,
+            user_id: v.id,
+            name: v.users?.full_name || 'Volunteer Personnel',
+            phone: v.users?.phone || '',
+            email: v.users?.email || '',
+            avatar_url: v.users?.avatar_url || null,
+            latitude: Number(v.latitude),
+            longitude: Number(v.longitude),
+            vehicle_type: v.vehicle_type,
+            is_available: v.is_available !== false,
+            capabilities: (v.volunteer_capabilities || []).map(c => c.capability)
+          }));
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getVolunteers error, using fallback:', err.message);
+      }
+    }
     return memoryStore.volunteers;
   },
 
-  getRequests({ type, status, priority } = {}) {
-    let list = [...memoryStore.requests];
-    if (type) list = list.filter(r => r.request_type.toUpperCase() === type.toUpperCase());
-    if (status) list = list.filter(r => r.status.toUpperCase() === status.toUpperCase());
-    if (priority) list = list.filter(r => r.priority_level.toUpperCase() === priority.toUpperCase());
-    
-    // Sort by priority_score descending, then created_at descending
-    return list.sort((a, b) => b.priority_score - a.priority_score || new Date(b.created_at) - new Date(a.created_at));
+  async enrichRequests(list) {
+    if (!list || list.length === 0) return [];
+    const responders = await this.getResponders();
+    const volunteers = await this.getVolunteers();
+    const activeMap = await this.getActiveAssignmentsMap();
+
+    return list.map(req => {
+      let assignedTo = req.assigned_to;
+      if (!assignedTo && req.assigned_to_user_id) {
+        const found = responders.find(r => r.id === req.assigned_to_user_id || r.user_id === req.assigned_to_user_id)
+          || volunteers.find(v => v.id === req.assigned_to_user_id || v.user_id === req.assigned_to_user_id);
+        assignedTo = {
+          id: req.assigned_to_user_id,
+          name: found ? (found.name || found.full_name) : 'Assigned Personnel',
+          role: req.assigned_responder_type || (found ? (found.responder_type || found.role) : 'RESPONDER')
+        };
+      }
+
+      const recType = determineRequiredResponderType(req);
+      const pool = recType === 'VOLUNTEER' ? volunteers : responders;
+      const matchResult = matchRequestCandidates(req, pool, activeMap);
+
+      return {
+        ...req,
+        assigned_to: assignedTo || null,
+        matching: matchResult,
+        recommended_responder: recType
+      };
+    });
   },
 
-  getRequestById(id) {
-    return memoryStore.requests.find(r => r.id === id || r.client_local_id === id) || null;
+  async getRequests({ type, status, priority } = {}) {
+    let list = null;
+    if (supabase) {
+      try {
+        let query = supabase.from('emergency_requests').select('*');
+        if (type) query = query.eq('request_type', type.toUpperCase());
+        if (status) query = query.eq('status', status.toUpperCase());
+        if (priority) query = query.eq('priority_level', priority.toUpperCase());
+        query = query.order('priority_score', { ascending: false }).order('created_at', { ascending: false });
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          list = data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getRequests error, using memoryStore:', err.message);
+      }
+    }
+    if (list === null) {
+      list = [...memoryStore.requests];
+      if (type) list = list.filter(r => r.request_type.toUpperCase() === type.toUpperCase());
+      if (status) list = list.filter(r => r.status.toUpperCase() === status.toUpperCase());
+      if (priority) list = list.filter(r => r.priority_level.toUpperCase() === priority.toUpperCase());
+      list.sort((a, b) => b.priority_score - a.priority_score || new Date(b.created_at) - new Date(a.created_at));
+    }
+    return this.enrichRequests(list);
   },
 
-  createRequest(data) {
+  async getRequestById(id) {
+    let req = null;
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('emergency_requests').select('*').eq('id', id).maybeSingle();
+        if (!error && data) {
+          req = data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getRequestById error:', err.message);
+      }
+    }
+    if (!req) {
+      req = memoryStore.requests.find(r => r.id === id || r.client_local_id === id) || null;
+    }
+    if (!req) return null;
+    const [enriched] = await this.enrichRequests([req]);
+    return enriched;
+  },
+
+  async createRequest(data) {
     // Deduplication check for offline-first sync
     if (data.client_local_id) {
       const existing = memoryStore.requests.find(r => r.client_local_id === data.client_local_id);
@@ -170,10 +289,13 @@ export const repository = {
       }
     }
 
+    const lat = Number(data.latitude || 16.5449);
+    const lon = Number(data.longitude || 81.5212);
+
     const newRequest = {
       id: data.id || uuidv4(),
       client_local_id: data.client_local_id || null,
-      citizen_id: data.citizen_id || 'dddddddd-dddd-dddd-dddd-ddddddddddd1',
+      citizen_id: data.citizen_id || null,
       citizen_name: data.citizen_name || 'Anonymous Citizen',
       citizen_phone: data.citizen_phone || '+919999999999',
       request_type: (data.request_type || 'emergency').toUpperCase(),
@@ -189,8 +311,8 @@ export const repository = {
       description: data.description || '',
       image_url: data.image_url || null,
       damage_severity: data.damage_severity || null,
-      latitude: Number(data.latitude || 16.5449),
-      longitude: Number(data.longitude || 81.5212),
+      latitude: lat,
+      longitude: lon,
       address: data.address || 'Bhimavaram Area',
       priority_score: data.priority_score || 50,
       priority_level: data.priority_level || 'MEDIUM',
@@ -206,11 +328,73 @@ export const repository = {
     };
 
     memoryStore.requests.unshift(newRequest);
+
+    if (supabase) {
+      try {
+        const isCitizenUuid = typeof newRequest.citizen_id === 'string' && newRequest.citizen_id.length === 36 && newRequest.citizen_id.includes('-');
+        const { data: dbData, error } = await supabase.from('emergency_requests').insert({
+          id: newRequest.id,
+          client_local_id: newRequest.client_local_id,
+          citizen_id: isCitizenUuid ? newRequest.citizen_id : null,
+          citizen_name: newRequest.citizen_name,
+          citizen_phone: newRequest.citizen_phone,
+          request_type: newRequest.request_type,
+          category: newRequest.category,
+          people_count: newRequest.people_count,
+          child_present: newRequest.child_present,
+          elderly_present: newRequest.elderly_present,
+          injured: newRequest.injured,
+          medical_emergency: newRequest.medical_emergency,
+          trapped: newRequest.trapped,
+          life_threat: newRequest.life_threat,
+          requested_resource: newRequest.requested_resource,
+          description: newRequest.description,
+          image_url: newRequest.image_url,
+          damage_severity: newRequest.damage_severity,
+          location: `POINT(${lon} ${lat})`,
+          latitude: lat,
+          longitude: lon,
+          address: newRequest.address,
+          priority_score: newRequest.priority_score,
+          priority_level: newRequest.priority_level,
+          priority_reason: newRequest.priority_reason,
+          recommended_responder: newRequest.recommended_responder,
+          status: newRequest.status,
+          is_offline_captured: newRequest.is_offline_captured,
+          synced_at: newRequest.synced_at
+        }).select().maybeSingle();
+
+        if (error) {
+          console.warn('[Repository] Supabase insert warning:', error.message);
+        } else if (dbData) {
+          newRequest.created_at = dbData.created_at;
+          newRequest.updated_at = dbData.updated_at;
+        }
+      } catch (dbErr) {
+        console.warn('[Repository] Supabase insert failed, fallback stored in memory:', dbErr.message);
+      }
+    }
+
     return { request: newRequest, isDuplicate: false };
   },
 
+  async deleteRequest(id) {
+    const index = memoryStore.requests.findIndex(r => r.id === id);
+    if (index !== -1) {
+      memoryStore.requests.splice(index, 1);
+    }
+    if (supabase) {
+      try {
+        await supabase.from('emergency_requests').delete().eq('id', id);
+      } catch (err) {
+        console.warn('[Repository] Supabase delete error:', err.message);
+      }
+    }
+    return true;
+  },
+
   updateRequestStatus(id, newStatus, changedBy = 'System', notes = '') {
-    const request = this.getRequestById(id);
+    const request = memoryStore.requests.find(r => r.id === id);
     if (!request) return null;
 
     const previousStatus = request.status;
@@ -218,6 +402,22 @@ export const repository = {
     request.updated_at = new Date().toISOString();
     if (newStatus === 'RESOLVED') {
       request.resolved_at = new Date().toISOString();
+    }
+
+    if (supabase) {
+      supabase.from('emergency_requests').update({
+        status: newStatus,
+        updated_at: request.updated_at,
+        resolved_at: request.resolved_at || null
+      }).eq('id', id).then();
+
+      supabase.from('request_status_history').insert({
+        request_id: request.id,
+        previous_status: previousStatus,
+        new_status: newStatus,
+        notes: notes || `Status changed to ${newStatus} by ${changedBy}`,
+        changed_at: new Date().toISOString()
+      }).then();
     }
 
     memoryStore.statusHistory.unshift({
@@ -233,29 +433,140 @@ export const repository = {
     return request;
   },
 
-  assignRequest(id, assignedTo) {
-    const request = this.getRequestById(id);
+  async getActiveAssignmentsMap() {
+    const activeMap = {};
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('emergency_requests')
+          .select('assigned_to_user_id')
+          .not('assigned_to_user_id', 'is', null)
+          .not('status', 'in', '("RESOLVED","CANCELLED")');
+        if (!error && data) {
+          data.forEach(r => {
+            if (r.assigned_to_user_id) {
+              activeMap[r.assigned_to_user_id] = (activeMap[r.assigned_to_user_id] || 0) + 1;
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('[Repository] Error querying active assignments from Supabase:', err.message);
+      }
+    }
+    // Also include in-memory active assignments
+    memoryStore.requests
+      .filter(r => r.assigned_to && r.assigned_to.id && !['RESOLVED', 'CANCELLED'].includes(r.status))
+      .forEach(r => {
+        activeMap[r.assigned_to.id] = (activeMap[r.assigned_to.id] || 0) + 1;
+      });
+
+    return activeMap;
+  },
+
+  async getMatchesForRequest(requestId) {
+    const request = await this.getRequestById(requestId);
     if (!request) return null;
 
+    let candidates = [];
+    if (request.request_type === 'EMERGENCY') {
+      candidates = await this.getResponders();
+    } else {
+      candidates = await this.getVolunteers();
+    }
+
+    const activeMap = await this.getActiveAssignmentsMap();
+    return matchRequestCandidates(request, candidates, activeMap);
+  },
+
+  async assignRequest(id, assignedTo, changedBy = 'Admin', userRole = 'ADMIN') {
+    // 1. Security check: Citizen users cannot assign requests
+    if (userRole && userRole.toUpperCase() === 'CITIZEN') {
+      return {
+        error: 'Forbidden: Citizens are not authorized to assign disaster response requests.',
+        status: 403,
+        code: 'FORBIDDEN_CITIZEN'
+      };
+    }
+
+    const request = await this.getRequestById(id);
+    if (!request) {
+      return { error: 'Request not found', status: 404, code: 'NOT_FOUND' };
+    }
+
+    // 2. Duplicate assignment prevention
+    const isAlreadyAssigned = (
+      request.assigned_to_user_id ||
+      (request.assigned_to && request.assigned_to.id)
+    ) && request.status !== 'PENDING';
+
+    const currentAssigneeId = request.assigned_to_user_id || (request.assigned_to && request.assigned_to.id);
+    const isSameAssignee = currentAssigneeId === assignedTo.id;
+
+    if (isAlreadyAssigned && !isSameAssignee && !assignedTo.force && userRole !== 'ADMIN') {
+      return {
+        error: 'Conflict: Request is already actively assigned to another personnel.',
+        status: 409,
+        code: 'ALREADY_ASSIGNED',
+        current_assigned_to: request.assigned_to || currentAssigneeId
+      };
+    }
+
+    const previousStatus = request.status;
+    const nowIso = new Date().toISOString();
     request.assigned_to = assignedTo;
+    request.assigned_to_user_id = assignedTo.id;
     request.status = 'ASSIGNED';
-    request.updated_at = new Date().toISOString();
+    request.updated_at = nowIso;
+    request.assigned_at = nowIso;
+
+    if (supabase) {
+      const isUuid = assignedTo.id && assignedTo.id.length === 36 && assignedTo.id.includes('-');
+      try {
+        await supabase.from('emergency_requests').update({
+          status: 'ASSIGNED',
+          assigned_to_user_id: isUuid ? assignedTo.id : null,
+          assigned_at: nowIso,
+          updated_at: nowIso
+        }).eq('id', id);
+
+        await supabase.from('request_status_history').insert({
+          request_id: request.id,
+          previous_status: previousStatus,
+          new_status: 'ASSIGNED',
+          changed_by_user_id: isUuid ? assignedTo.id : null,
+          notes: `Assigned to ${assignedTo.name || 'Personnel'} (${assignedTo.role || 'RESPONDER'}) by ${changedBy}`,
+          changed_at: nowIso
+        });
+      } catch (dbErr) {
+        console.warn('[Repository] Supabase assignment write warning:', dbErr.message);
+      }
+    }
 
     memoryStore.statusHistory.unshift({
       id: uuidv4(),
       request_id: request.id,
-      previous_status: 'PENDING',
+      previous_status: previousStatus,
       new_status: 'ASSIGNED',
-      changed_by: assignedTo.name || 'Admin',
+      changed_by: changedBy || assignedTo.name || 'Admin',
       notes: `Assigned to ${assignedTo.name}`,
-      timestamp: new Date().toISOString()
+      timestamp: nowIso
     });
 
-    return request;
+    return { request, success: true };
   },
 
-  getStats() {
-    const requests = memoryStore.requests;
+  async getStats() {
+    let requests = memoryStore.requests;
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('emergency_requests').select('*');
+        if (!error && data) {
+          requests = data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getStats query error, using memoryStore:', err.message);
+      }
+    }
     return {
       total_requests: requests.length,
       critical_requests: requests.filter(r => r.priority_level === 'CRITICAL' && r.status !== 'RESOLVED').length,
@@ -272,15 +583,46 @@ export const repository = {
     };
   },
 
-  getUserById(id) {
+  async getUserById(id) {
+    if (supabase && typeof id === 'string' && id.length === 36 && id.includes('-')) {
+      try {
+        const { data, error } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+        if (!error && data) {
+          const idx = memoryStore.users.findIndex(u => u.id === id);
+          if (idx !== -1) memoryStore.users[idx] = data;
+          else memoryStore.users.push(data);
+          return data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getUserById warning:', err.message);
+      }
+    }
     return memoryStore.users.find(u => u.id === id) || null;
+  },
+
+  async getUserByEmail(email) {
+    if (!email) return null;
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('users').select('*').ilike('email', email.trim()).maybeSingle();
+        if (!error && data) {
+          const idx = memoryStore.users.findIndex(u => u.id === data.id);
+          if (idx !== -1) memoryStore.users[idx] = data;
+          else memoryStore.users.push(data);
+          return data;
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getUserByEmail warning:', err.message);
+      }
+    }
+    return memoryStore.users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
   getAllUsers() {
     return memoryStore.users;
   },
 
-  updateUserProfile(id, updates = {}) {
+  async updateUserProfile(id, updates = {}) {
     let user = memoryStore.users.find(u => u.id === id);
     if (!user) {
       // Create user record if not exists
@@ -300,7 +642,169 @@ export const repository = {
       if (updates.avatar_url !== undefined) user.avatar_url = updates.avatar_url;
       if (updates.role !== undefined) user.role = updates.role;
     }
+
+    if (supabase) {
+      try {
+        const isUuid = typeof id === 'string' && id.length === 36 && id.includes('-');
+        if (isUuid) {
+          await supabase.from('users').upsert({
+            id: user.id,
+            email: user.email,
+            full_name: user.full_name,
+            phone: user.phone,
+            role: user.role,
+            avatar_url: user.avatar_url
+          });
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase user upsert warning:', err.message);
+      }
+    }
+
     return user;
+  },
+
+  async registerCitizen({ full_name, email, phone }) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await this.getUserByEmail(normalizedEmail);
+    if (existing) {
+      throw new Error('An account with this email address already exists. Please log in.');
+    }
+
+    const userId = uuidv4();
+    const user = {
+      id: userId,
+      email: normalizedEmail,
+      full_name: full_name.trim(),
+      phone: phone ? phone.trim() : null,
+      role: 'CITIZEN',
+      avatar_url: null
+    };
+
+    if (supabase) {
+      const { error } = await supabase.from('users').insert(user);
+      if (error) throw new Error(error.message);
+    }
+    memoryStore.users.push(user);
+    return user;
+  },
+
+  async registerVolunteer({ full_name, email, phone, capabilities = [], vehicle_type = 'Two Wheeler' }) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await this.getUserByEmail(normalizedEmail);
+    if (existing) {
+      throw new Error('An account with this email address already exists. Please log in.');
+    }
+
+    const validCaps = ['FOOD', 'WATER', 'MEDICINE', 'FIRST_AID', 'TRANSPORTATION', 'GENERAL_ASSISTANCE', 'RESCUE_SUPPORT'];
+    const capsToInsert = capabilities
+      .map(c => c.toUpperCase().replace('TRANSPORT', 'TRANSPORTATION').replace('GENERAL_RELIEF', 'GENERAL_ASSISTANCE'))
+      .filter(c => validCaps.includes(c));
+
+    const userId = uuidv4();
+    const user = {
+      id: userId,
+      email: normalizedEmail,
+      full_name: full_name.trim(),
+      phone: phone ? phone.trim() : null,
+      role: 'VOLUNTEER',
+      avatar_url: null
+    };
+
+    if (supabase) {
+      const { error: userErr } = await supabase.from('users').insert(user);
+      if (userErr) throw new Error(userErr.message);
+
+      const { error: volErr } = await supabase.from('volunteers').insert({
+        id: userId,
+        vehicle_type: vehicle_type || 'Personal Vehicle',
+        is_available: true,
+        latitude: 16.5440,
+        longitude: 81.5230
+      });
+      if (volErr) console.warn('[Repository] Error inserting volunteer record:', volErr.message);
+
+      if (capsToInsert.length > 0) {
+        const capRows = capsToInsert.map(c => ({
+          volunteer_id: userId,
+          capability: c
+        }));
+        const { error: capErr } = await supabase.from('volunteer_capabilities').insert(capRows);
+        if (capErr) console.warn('[Repository] Error inserting volunteer capabilities:', capErr.message);
+      }
+    }
+
+    memoryStore.users.push(user);
+    memoryStore.volunteers.push({
+      id: userId,
+      user_id: userId,
+      name: user.full_name,
+      phone: user.phone || '',
+      email: user.email,
+      latitude: 16.5440,
+      longitude: 81.5230,
+      vehicle_type: vehicle_type || 'Personal Vehicle',
+      is_available: true,
+      capabilities: capsToInsert.length > 0 ? capsToInsert : ['GENERAL_ASSISTANCE']
+    });
+
+    return { ...user, capabilities: capsToInsert };
+  },
+
+  async registerResponder({ full_name, email, phone, responder_type = 'RESCUE_TEAM', badge_number = 'PENDING_APPROVAL' }) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await this.getUserByEmail(normalizedEmail);
+    if (existing) {
+      throw new Error('An account with this email address already exists. Please log in.');
+    }
+
+    const validTypes = ['RESCUE_TEAM', 'POLICE', 'MEDICAL_TEAM', 'FIRE_SERVICES'];
+    const assignedType = validTypes.includes((responder_type || '').toUpperCase())
+      ? responder_type.toUpperCase()
+      : 'RESCUE_TEAM';
+
+    const userId = uuidv4();
+    const user = {
+      id: userId,
+      email: normalizedEmail,
+      full_name: full_name.trim(),
+      phone: phone ? phone.trim() : null,
+      role: 'RESPONDER',
+      avatar_url: null
+    };
+
+    if (supabase) {
+      const { error: userErr } = await supabase.from('users').insert(user);
+      if (userErr) throw new Error(userErr.message);
+
+      // Safe approval model: new public responder registration defaults to is_available: false
+      const { error: respErr } = await supabase.from('responders').insert({
+        id: userId,
+        badge_number: (badge_number || 'PENDING_VERIFICATION').trim(),
+        responder_type: assignedType,
+        is_available: false,
+        latitude: 16.5449,
+        longitude: 81.5212
+      });
+      if (respErr) console.warn('[Repository] Error inserting responder record:', respErr.message);
+    }
+
+    memoryStore.users.push(user);
+    memoryStore.responders.push({
+      id: userId,
+      user_id: userId,
+      name: user.full_name,
+      phone: user.phone || '',
+      email: user.email,
+      badge_number: (badge_number || 'PENDING_VERIFICATION').trim(),
+      responder_type: assignedType,
+      latitude: 16.5449,
+      longitude: 81.5212,
+      is_available: false,
+      active_assignments_count: 0
+    });
+
+    return { ...user, responder_type: assignedType, badge_number: badge_number || 'PENDING_VERIFICATION' };
   }
 };
 

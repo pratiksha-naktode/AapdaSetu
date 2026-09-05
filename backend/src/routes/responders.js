@@ -4,13 +4,14 @@ import { matchResponders } from '../services/matchingService.js';
 
 const router = express.Router();
 
-router.get('/', (req, res) => {
-  res.json({ responders: repository.getResponders() });
+router.get('/', async (req, res) => {
+  const responders = await repository.getResponders();
+  res.json({ responders });
 });
 
-router.get('/nearby', (req, res) => {
+router.get('/nearby', async (req, res) => {
   const { lat, lon, type } = req.query;
-  const responders = repository.getResponders();
+  const responders = await repository.getResponders();
   const mockReq = {
     latitude: lat ? Number(lat) : 16.5449,
     longitude: lon ? Number(lon) : 81.5212,

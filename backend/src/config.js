@@ -9,14 +9,19 @@ const rootEnvPath = path.resolve(__dirname, '../../.env');
 dotenv.config({ path: rootEnvPath });
 dotenv.config();
 
+const rawSupabaseUrl = (process.env.SUPABASE_URL || '').trim();
+const normalizedSupabaseUrl = rawSupabaseUrl && !rawSupabaseUrl.startsWith('http')
+  ? `https://${rawSupabaseUrl}.supabase.co`
+  : rawSupabaseUrl;
+
 export const config = {
   port: process.env.PORT || 5000,
   nodeEnv: process.env.NODE_ENV || 'development',
   fastApiUrl: process.env.FASTAPI_PRIORITY_URL || 'http://127.0.0.1:8000',
   supabase: {
-    url: process.env.SUPABASE_URL || '',
-    anonKey: process.env.SUPABASE_ANON_KEY || '',
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+    url: normalizedSupabaseUrl,
+    anonKey: (process.env.SUPABASE_ANON_KEY || '').trim(),
+    serviceRoleKey: (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim(),
   },
   twilio: {
     accountSid: process.env.TWILIO_ACCOUNT_SID || '',

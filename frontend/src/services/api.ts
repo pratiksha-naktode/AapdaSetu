@@ -81,13 +81,26 @@ export const api = {
     return data.request;
   },
 
+  async getMatches(id: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/api/requests/${id}/matches`);
+    if (!res.ok) throw new Error('Failed to fetch matches');
+    return res.json();
+  },
+
   async assignRequest(id: string, assignedTo: { id: string; name: string; role: string }): Promise<EmergencyRequest> {
+    const token = localStorage.getItem('varahi_auth_token');
     const res = await fetch(`${API_BASE}/api/requests/${id}/assign`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
       body: JSON.stringify({ assigned_to: assignedTo })
     });
-    if (!res.ok) throw new Error('Failed to assign request');
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed to assign request');
+    }
     const data = await res.json();
     return data.request;
   },

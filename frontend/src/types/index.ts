@@ -68,10 +68,42 @@ export interface EmergencyRequest {
     name: string;
     role?: string;
   } | null;
+  matching?: MatchingResult;
   is_offline_captured?: boolean;
   synced_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MatchingCandidate {
+  id: string;
+  name: string;
+  distance_km: number | null;
+  capability_match: boolean;
+  partial_match?: boolean;
+  availability: boolean;
+  matching_score: number;
+  score_breakdown?: {
+    capability: number;
+    availability: number;
+    distance: number;
+  };
+  type?: string;
+  capabilities?: string[];
+  is_excluded?: boolean;
+  exclusion_reason?: string | null;
+}
+
+export interface MatchingResult {
+  request_id: string;
+  recommended_type: ResponderType;
+  required_capability: string;
+  candidates: MatchingCandidate[];
+  recommended_candidate: MatchingCandidate | null;
+  candidate_count: number;
+  status?: string;
+  message?: string;
+  distance_matching_available?: boolean;
 }
 
 export interface Responder {

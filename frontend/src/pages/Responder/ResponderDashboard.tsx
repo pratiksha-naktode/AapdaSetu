@@ -4,14 +4,18 @@ import { EmergencyRequest, Responder } from '../../types';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
 import { Shield, AlertTriangle, Users, MapPin, CheckCircle, Navigation, Phone, ExternalLink } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 
 export const ResponderDashboard: React.FC = () => {
+  const { user } = useAuth();
   const [requests, setRequests] = useState<EmergencyRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [activeResponder, setActiveResponder] = useState<{ id: string; name: string }>({
-    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
-    name: 'NDRF Rescue Unit Alpha (Capt. Rajesh)'
-  });
+
+  // Active responder identity from authenticated session (with development fallback)
+  const activeResponder = {
+    id: (user?.role === 'RESPONDER' ? user?.id : null) || 'dev-responder-alpha',
+    name: (user?.role === 'RESPONDER' ? user?.full_name : null) || 'NDRF Rescue Unit Alpha (Capt. Rajesh)'
+  };
 
   useEffect(() => {
     loadRequests();
@@ -118,9 +122,15 @@ export const ResponderDashboard: React.FC = () => {
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
                   <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
                       <PriorityBadge level={req.priority_level} score={req.priority_score} />
                       <StatusBadge status={req.status} />
+                      <span style={{ fontSize: '0.72rem', background: '#3b82f6', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: 'var(--radius-sm)', fontWeight: 700, textTransform: 'uppercase' }}>
+                        {req.request_type || 'EMERGENCY'}
+                      </span>
+                      <span style={{ fontSize: '0.72rem', background: '#0284c7', color: '#fff', padding: '0.15rem 0.5rem', borderRadius: 'var(--radius-sm)', fontWeight: 700 }}>
+                        CAPABILITY: {req.matching?.required_capability || 'RESCUE_SUPPORT'}
+                      </span>
                       <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         #{req.id.slice(0, 8)} • {new Date(req.created_at).toLocaleTimeString()}
                       </span>
@@ -142,26 +152,82 @@ export const ResponderDashboard: React.FC = () => {
                   </div>
                 </div>
 
-                {/* AI Triage Reason */}
-                <div style={{ background: 'var(--bg-secondary)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', margin: '1rem 0', border: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#fca5a5', textTransform: 'uppercase', marginBottom: '0.2rem' }}>
-                    AI Priority Engine Rationale
-                  </div>
-                  <p style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                    {req.priority_reason}
-                  </p>
-                  {req.description && (
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.4rem', fontStyle: 'italic' }}>
-                      Citizen Note: "{req.description}"
+                {/* AI Priority & Matching Intelligence Card */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.85rem', margin: '1rem 0' }}>
+                  {/* AI Triage Reason */}
+                  <div style={{ background: 'var(--bg-secondary)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#fca5a5', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
+                      Priority Engine Assessment
+                    </div>
+                    <p style={{ fontSize: '0.88rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                      {req.priority_reason || 'Standard priority response required'}
                     </p>
-                  )}
+                    {req.description && (
+                      <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '0.4rem', fontStyle: 'italic' }}>
+                        "{req.description}"
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Rule-Based Matching Recommendation */}
+                  <div style={{ background: 'rgba(56, 189, 248, 0.05)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#38bdf8', textTransform: 'uppercase' }}>
+                        Matching Engine Recommendation
+                      </span>
+                      {req.matching?.recommended_candidate ? (
+                        <span style={{ fontSize: '0.72rem', background: '#0284c7', color: '#fff', padding: '0.1rem 0.45rem', borderRadius: '9999px', fontWeight: 800 }}>
+                          Score: {req.matching.recommended_candidate.matching_score}/95
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '0.7rem', color: '#f87171', fontWeight: 700 }}>
+                          No Match
+                        </span>
+                      )}
+                    </div>
+
+                    {req.matching?.recommended_candidate ? (
+                      <div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#fff' }}>
+                          {req.matching.recommended_candidate.name}
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', marginTop: '0.35rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          <span>Type: <strong style={{ color: '#e2e8f0' }}>{req.matching.recommended_candidate.type || req.matching.recommended_type}</strong></span>
+                          <span>•</span>
+                          <span>Distance: <strong style={{ color: '#38bdf8' }}>{req.matching.recommended_candidate.distance_km != null ? `${req.matching.recommended_candidate.distance_km} km` : 'N/A'}</strong></span>
+                        </div>
+
+                        {/* Transparent Scoring Breakdown */}
+                        {req.matching.recommended_candidate.score_breakdown && (
+                          <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.68rem', background: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', padding: '0.1rem 0.35rem', borderRadius: '4px', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                              Capability: +{req.matching.recommended_candidate.score_breakdown.capability}
+                            </span>
+                            <span style={{ fontSize: '0.68rem', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', padding: '0.1rem 0.35rem', borderRadius: '4px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                              Available: +{req.matching.recommended_candidate.score_breakdown.availability}
+                            </span>
+                            <span style={{ fontSize: '0.68rem', background: 'rgba(234, 179, 8, 0.15)', color: '#facc15', padding: '0.1rem 0.35rem', borderRadius: '4px', border: '1px solid rgba(234, 179, 8, 0.3)' }}>
+                              Distance: +{req.matching.recommended_candidate.score_breakdown.distance}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p style={{ fontSize: '0.85rem', color: '#94a3b8', fontStyle: 'italic', marginTop: '0.2rem' }}>
+                        {req.matching?.message || 'No suitable available responder found.'}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
-                {/* Actions Bar */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                {/* Actions & Assignment Bar */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.85rem' }}>
                   <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                     {req.assigned_to ? (
-                      <span>Assigned to: <strong style={{ color: '#fff' }}>{req.assigned_to.name}</strong></span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <CheckCircle size={15} color="#4ade80" />
+                        <span>Assigned to: <strong style={{ color: '#fff' }}>{req.assigned_to.name}</strong></span>
+                      </div>
                     ) : (
                       <span style={{ color: '#facc15' }}>⚠️ Unassigned — Immediate action recommended</span>
                     )}
@@ -169,13 +235,36 @@ export const ResponderDashboard: React.FC = () => {
 
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {!req.assigned_to && !isResolved && (
-                      <button
-                        onClick={() => handleAccept(req.id)}
-                        className="btn btn-critical"
-                        style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
-                      >
-                        Accept Task
-                      </button>
+                      <>
+                        {req.matching?.recommended_candidate && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const cand = req.matching!.recommended_candidate!;
+                                await api.assignRequest(req.id, {
+                                  id: cand.id,
+                                  name: cand.name,
+                                  role: 'RESPONDER'
+                                });
+                                loadRequests();
+                              } catch (err: any) {
+                                alert('Assignment failed: ' + err.message);
+                              }
+                            }}
+                            className="btn btn-primary"
+                            style={{ padding: '0.45rem 0.9rem', fontSize: '0.85rem', background: '#0284c7' }}
+                          >
+                            Assign Recommended ({req.matching.recommended_candidate.name.split(' ')[0]})
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleAccept(req.id)}
+                          className="btn btn-critical"
+                          style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+                        >
+                          Accept Task
+                        </button>
+                      </>
                     )}
 
                     {isAssignedToMe && req.status === 'ACCEPTED' && (

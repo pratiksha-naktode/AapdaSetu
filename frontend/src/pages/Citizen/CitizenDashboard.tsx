@@ -87,10 +87,10 @@ export const CitizenDashboard: React.FC = () => {
                 Citizen Emergency Portal
               </span>
               <h1 style={{ fontSize: '1.6rem', fontWeight: 800, marginTop: '0.15rem' }}>
-                {user?.full_name || 'Citizen User'}
+                {user?.full_name || 'Citizen Portal'}
               </h1>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span>{user?.phone || '+91-9876543221'}</span>
+                <span>{user?.phone || (user?.email ? user.email : 'Guest Session')}</span>
                 <span>•</span>
                 <Link to="/citizen/profile" style={{ color: '#38bdf8', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
                   <Camera size={12} /> Edit Profile Photo
