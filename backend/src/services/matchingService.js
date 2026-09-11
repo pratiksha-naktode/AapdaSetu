@@ -36,15 +36,10 @@ export function determineRequiredResponderType(request) {
     return 'VOLUNTEER';
   }
 
-  // If already computed by FastAPI Priority Engine
-  if (request.recommended_responder) {
-    return request.recommended_responder.toUpperCase();
-  }
-
   const category = (request.category || '').toLowerCase();
   const desc = (request.description || '').toLowerCase();
 
-  if (category.includes('trapped') || desc.includes('trapped') || desc.includes('roof') || desc.includes('flood')) {
+  if (category.includes('trapped') || desc.includes('trapped') || desc.includes('roof') || desc.includes('flood') || request.trapped) {
     return 'RESCUE_TEAM';
   }
   if (category.includes('medical') || request.injured || request.medical_emergency || desc.includes('injured')) {
@@ -53,6 +48,12 @@ export function determineRequiredResponderType(request) {
   if (category.includes('fire') || desc.includes('fire') || desc.includes('gas')) {
     return 'FIRE_SERVICES';
   }
+
+  // If already computed by FastAPI Priority Engine and not overridden by specific category
+  if (request.recommended_responder) {
+    return request.recommended_responder.toUpperCase();
+  }
+
   return 'POLICE';
 }
 
@@ -408,6 +409,150 @@ export function matchRequestCandidates(request, candidates = [], activeAssignmen
   };
 }
 
+/**
+ * Intelligent Automatic Responder Assignment for EMERGENCY requests.
+ * Evaluates responder eligibility:
+ * 1. Available/Active (is_available !== false)
+ * 2. Has valid real GPS coordinates (latitude, longitude)
+ * 3. Workload rule: fewer than 4 active uncompleted tasks (0, 1, 2, 3 tasks eligible; >= 4 excluded)
+ * 4. Required capability / responder type match
+ * 5. Nearest suitable candidate selected based on Haversine distance
+ */
+export function findBestResponderForEmergencyRequest(request, responders = [], activeAssignmentsMap = {}) {
+  const requiredType = determineRequiredResponderType(request);
+  const reqLat = Number(request.latitude);
+  const reqLon = Number(request.longitude);
+  const hasValidReqLoc = (
+    request.latitude != null && 
+    request.longitude != null && 
+    !isNaN(reqLat) && 
+    !isNaN(reqLon) && 
+    reqLat !== 0 && 
+    reqLon !== 0
+  );
+
+  if (!hasValidReqLoc) {
+    return {
+      responder: null,
+      bestResponder: null,
+      explanation: 'Location is unavailable; distance-based automatic matching cannot be performed.',
+      distance_km: null,
+      active_tasks: null,
+      is_assigned: false
+    };
+  }
+
+  const evaluated = responders.map(resp => {
+    const activeTasks = activeAssignmentsMap[resp.id] || activeAssignmentsMap[resp.user_id] || resp.active_assignments_count || 0;
+    const respType = (resp.responder_type || resp.type || '').toUpperCase();
+    
+    const isExactMatch = respType === requiredType.toUpperCase();
+    const isCompatible = isExactMatch || (
+      (requiredType === 'RESCUE_TEAM' && ['POLICE', 'FIRE_SERVICES'].includes(respType)) ||
+      (requiredType === 'POLICE' && ['RESCUE_TEAM'].includes(respType)) ||
+      (requiredType === 'MEDICAL_TEAM' && ['RESCUE_TEAM'].includes(respType))
+    );
+    const hasCapability = isExactMatch || isCompatible;
+
+    const isAvailable = resp.is_available !== false;
+    const candLat = Number(resp.latitude);
+    const candLon = Number(resp.longitude);
+    const hasValidCandLoc = (
+      resp.latitude != null && 
+      resp.longitude != null && 
+      !isNaN(candLat) && 
+      !isNaN(candLon) && 
+      candLat !== 0 && 
+      candLon !== 0
+    );
+    const distanceKm = hasValidCandLoc ? calculateDistanceKm(reqLat, reqLon, candLat, candLon) : null;
+    const isOverloaded = activeTasks >= 4;
+
+    return {
+      responder: resp,
+      id: resp.id,
+      name: resp.name || resp.full_name || 'Responder',
+      phone: resp.phone || '',
+      type: respType,
+      isAvailable,
+      activeTasks,
+      isOverloaded,
+      isExactMatch,
+      isCompatible,
+      hasCapability,
+      distanceKm,
+      hasValidLocation: distanceKm !== null
+    };
+  });
+
+  // Filter candidates who meet capability, are available, have valid GPS, and are under 4 tasks (0, 1, 2, 3 active tasks)
+  const eligible = evaluated.filter(c => c.hasCapability && c.isAvailable && !c.isOverloaded && c.hasValidLocation);
+
+  // Sorting Priority:
+  // 1. Exact capability match first
+  // 2. Distance ascending (nearest suitable candidate preferred)
+  // 3. Active tasks count ascending (fewer active tasks if equal distance)
+  eligible.sort((a, b) => {
+    if (a.isExactMatch && !b.isExactMatch) return -1;
+    if (!a.isExactMatch && b.isExactMatch) return 1;
+    if ((a.distanceKm || 9999) !== (b.distanceKm || 9999)) {
+      return (a.distanceKm || 9999) - (b.distanceKm || 9999);
+    }
+    return a.activeTasks - b.activeTasks;
+  });
+
+  if (eligible.length > 0) {
+    const best = eligible[0];
+    const matchTypeStr = best.isExactMatch ? `Exact ${requiredType} unit` : `Compatible rescue unit (${best.type})`;
+    
+    // Check if a closer responder was excluded due to 4 tasks limit
+    const closerOverloaded = evaluated.find(c => 
+      c.hasCapability && 
+      c.isAvailable && 
+      c.isOverloaded && 
+      c.distanceKm !== null && 
+      best.distanceKm !== null && 
+      c.distanceKm < best.distanceKm
+    );
+
+    let explanation = '';
+    if (closerOverloaded) {
+      explanation = `Nearest unit (${closerOverloaded.name}, ${closerOverloaded.distanceKm} km) excluded because active task limit reached (4/4). Auto-assigned to next nearest eligible unit ${best.name} (${matchTypeStr}, ${best.distanceKm} km, ${best.activeTasks}/4 active tasks).`;
+    } else {
+      explanation = `AUTO — NEAREST AVAILABLE RESPONDER: Assigned to ${best.name} (${matchTypeStr}, ${best.distanceKm} km distance, ${best.activeTasks}/4 active tasks).`;
+    }
+
+    return {
+      responder: best.responder,
+      bestResponder: best.responder,
+      explanation,
+      distance_km: best.distanceKm,
+      active_tasks: best.activeTasks,
+      skippedBusyCount: evaluated.filter(c => c.isOverloaded).length,
+      is_assigned: true
+    };
+  }
+
+  // If no candidate is eligible, check if workload limit is the cause
+  const matchingOverloaded = evaluated.filter(c => c.hasCapability && c.isAvailable && c.isOverloaded);
+  let explanation = '';
+  if (matchingOverloaded.length > 0) {
+    explanation = 'No suitable responder currently available (All eligible nearby rescue units are at maximum workload capacity: 4/4 active tasks).';
+  } else {
+    explanation = `No suitable responder currently available (No available ${requiredType} units with active GPS location in sector).`;
+  }
+
+  return {
+    responder: null,
+    bestResponder: null,
+    explanation,
+    distance_km: null,
+    active_tasks: null,
+    skippedBusyCount: matchingOverloaded.length,
+    is_assigned: false
+  };
+}
+
 // Backwards-compatible exports for existing route imports
 export function matchResponders(request, responders) {
   const result = matchRequestCandidates(request, responders);
@@ -418,3 +563,4 @@ export function matchVolunteers(request, volunteers) {
   const result = matchRequestCandidates(request, volunteers);
   return result.candidates;
 }
+

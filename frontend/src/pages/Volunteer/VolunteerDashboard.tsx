@@ -52,22 +52,64 @@ export const VolunteerDashboard: React.FC = () => {
     }
   }, [user]);
 
-  // Acquire user's real GPS coordinates if permitted
+  const [locationEnabled, setLocationEnabled] = useState<boolean>(false);
+  const [locating, setLocating] = useState<boolean>(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const handleEnableLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setLocating(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setUserCoords(coords);
+        setLocationEnabled(true);
+        setLocating(false);
+        setLocationError(null);
+
+        // Update location on backend for automatic matching
+        api.updateVolunteerLocation(activeVolunteer.id, {
+          latitude: coords.lat,
+          longitude: coords.lon,
+          is_available: true
+        }).catch(err => console.warn('Could not sync volunteer location to backend:', err));
+      },
+      (err) => {
+        setLocating(false);
+        setLocationEnabled(false);
+        setLocationError('Location permission is required for automatic nearby-task assignment.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  // Attempt initial location check on mount
   useEffect(() => {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         pos => {
-          setUserCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          setUserCoords(coords);
+          setLocationEnabled(true);
+          api.updateVolunteerLocation(activeVolunteer.id, {
+            latitude: coords.lat,
+            longitude: coords.lon,
+            is_available: true
+          }).catch(() => {});
         },
         () => {
-          // Fallback to Bhimavaram town center coordinates if device GPS denied
-          setUserCoords({ lat: 16.5449, lon: 81.5212 });
-        }
+          // Keep prompt for volunteer to click [Enable Location]
+        },
+        { timeout: 5000 }
       );
-    } else {
-      setUserCoords({ lat: 16.5449, lon: 81.5212 });
     }
-  }, []);
+  }, [activeVolunteer.id]);
 
   const availableCaps: VolunteerCapability[] = [
     'MEDICINE',
@@ -87,7 +129,7 @@ export const VolunteerDashboard: React.FC = () => {
 
   const loadRequests = async () => {
     try {
-      const list = await api.getRequests({ type: 'RESOURCE' });
+      const list = await api.getRequests();
       setRequests(list);
     } catch (err) {
       console.error('Error loading volunteer requests:', err);
@@ -223,6 +265,57 @@ export const VolunteerDashboard: React.FC = () => {
             })}
           </div>
         </div>
+      </div>
+
+      {/* Volunteer Location Status Banner */}
+      <div className="card" style={{ padding: '1.25rem', background: locationEnabled ? 'rgba(16, 185, 129, 0.08)' : 'rgba(168, 85, 247, 0.08)', border: `1px solid ${locationEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(168, 85, 247, 0.3)'}`, borderRadius: 'var(--radius-md)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{ padding: '0.6rem', borderRadius: '50%', background: locationEnabled ? 'rgba(16, 185, 129, 0.2)' : 'rgba(168, 85, 247, 0.2)', color: locationEnabled ? '#34d399' : '#c084fc' }}>
+              <MapPin size={20} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.95rem', fontWeight: 800, color: locationEnabled ? '#86efac' : '#e2e8f0' }}>
+                {locationEnabled ? '✅ Location Enabled' : '📍 Enable Location'}
+              </div>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.15rem', margin: 0 }}>
+                {locationEnabled
+                  ? 'Your current location is being used for rescue task matching.'
+                  : 'Allow location access so VARAHI can find nearby emergency requests and assign suitable rescue tasks.'}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            {!locationEnabled ? (
+              <button
+                onClick={handleEnableLocation}
+                disabled={locating}
+                className="btn btn-primary"
+                style={{ padding: '0.45rem 1.1rem', fontSize: '0.85rem', gap: '0.4rem', background: '#9333ea' }}
+              >
+                <MapPin size={14} /> {locating ? 'Acquiring GPS...' : 'Enable Location'}
+              </button>
+            ) : (
+              <span style={{ fontSize: '0.8rem', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid #10b981', padding: '0.3rem 0.8rem', borderRadius: 'var(--radius-sm)', fontWeight: 700 }}>
+                ✓ GPS ACTIVE
+              </span>
+            )}
+          </div>
+        </div>
+
+        {locationError && (
+          <div style={{ marginTop: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', color: '#fca5a5', padding: '0.6rem 0.85rem', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>❌ {locationError}</span>
+            <button
+              onClick={handleEnableLocation}
+              className="btn btn-outline"
+              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}
+            >
+              Try Again
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Available & Assigned Tasks Queue */}

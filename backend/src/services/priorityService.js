@@ -21,7 +21,7 @@ export async function calculatePriority(requestData) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(3500)
+      signal: AbortSignal.timeout(400)
     });
 
     if (response.ok) {
@@ -72,8 +72,11 @@ function evaluateRuleFallback(req) {
   else if (finalScore >= 40) level = 'MEDIUM';
 
   let recommended = 'VOLUNTEER';
-  if (req.trapped || req.life_threat) recommended = 'RESCUE_TEAM';
-  else if (req.medical_emergency || req.injured) recommended = 'MEDICAL_TEAM';
+  const cat = (req.category || '').toLowerCase();
+  const desc = (req.additional_notes || '').toLowerCase();
+  if (req.trapped || req.life_threat || cat.includes('trap') || cat.includes('flood') || desc.includes('trap')) recommended = 'RESCUE_TEAM';
+  else if (req.medical_emergency || req.injured || cat.includes('med') || desc.includes('injur')) recommended = 'MEDICAL_TEAM';
+  else if (cat.includes('fire') || cat.includes('gas') || desc.includes('fire')) recommended = 'FIRE_SERVICES';
   else if (req.request_type === 'emergency') recommended = 'POLICE';
 
   const reasonStr = reasons.length > 0 

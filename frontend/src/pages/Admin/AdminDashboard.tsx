@@ -24,6 +24,8 @@ export const AdminDashboard: React.FC = () => {
     requestId: string;
     request?: EmergencyRequest;
     reportId?: string;
+    issueType?: string;
+    candidateMode?: 'RESPONDER' | 'VOLUNTEER';
   } | null>(null);
 
   const [selectedPersonnelId, setSelectedPersonnelId] = useState<string>('');
@@ -86,16 +88,46 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleOpenSupportModal = (requestId: string, reportId?: string) => {
+  const getDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const getFilteredActionCandidates = (mode: 'RESPONDER' | 'VOLUNTEER', request?: EmergencyRequest) => {
+    if (mode === 'RESPONDER') {
+      return responders
+        .filter(r => r.is_available && (r.active_assignments_count ?? 0) < 4)
+        .sort((a, b) => {
+          const aDist = request ? getDistanceKm(request.latitude, request.longitude, a.latitude, a.longitude) : 0;
+          const bDist = request ? getDistanceKm(request.latitude, request.longitude, b.latitude, b.longitude) : 0;
+          return aDist - bDist;
+        });
+    }
+
+    return volunteers
+      .filter(v => v.is_available)
+      .sort((a, b) => {
+        const aDist = request ? getDistanceKm(request.latitude, request.longitude, a.latitude, a.longitude) : 0;
+        const bDist = request ? getDistanceKm(request.latitude, request.longitude, b.latitude, b.longitude) : 0;
+        return aDist - bDist;
+      });
+  };
+
+  const handleOpenSupportModal = (requestId: string, reportId?: string, issueType?: string) => {
     const req = requests.find(r => r.id === requestId);
-    setActionModal({ type: 'SUPPORT', requestId, request: req, reportId });
+    const mode = issueType === 'Need Volunteer' ? 'VOLUNTEER' : 'RESPONDER';
+    setActionModal({ type: 'SUPPORT', requestId, request: req, reportId, issueType, candidateMode: mode });
     setSelectedPersonnelId('');
     setReassignReason('');
   };
 
   const handleOpenReassignModal = (requestId: string, reportId?: string) => {
     const req = requests.find(r => r.id === requestId);
-    setActionModal({ type: 'REASSIGN', requestId, request: req, reportId });
+    setActionModal({ type: 'REASSIGN', requestId, request: req, reportId, candidateMode: 'RESPONDER' });
     setSelectedPersonnelId('');
     setReassignReason('');
   };
@@ -127,20 +159,21 @@ export const AdminDashboard: React.FC = () => {
       }
 
       if (actionModal.type === 'SUPPORT') {
-        await api.assignSupport(actionModal.requestId, candidate.user_id, candidate.role);
+        await api.assignSupport(actionModal.requestId, candidate.user_id, candidate.role, 'Admin');
         if (actionModal.reportId) {
-          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED');
+          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED', 'ADMIN');
         }
-        alert(`Support personnel ${candidate.name} assigned successfully!`);
+        alert(`${candidate.role === 'RESPONDER' ? 'Responder' : 'Volunteer'} ${candidate.name} assigned successfully!`);
       } else {
         await api.reassignTask(
           actionModal.requestId,
           candidate.user_id,
           candidate.role,
-          reassignReason || 'Admin manual task reassignment from Command Center'
+          reassignReason || 'Admin manual task reassignment from Command Center',
+          'Admin'
         );
         if (actionModal.reportId) {
-          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED');
+          await api.updateTaskReportStatus(actionModal.reportId, 'RESOLVED', 'ADMIN');
         }
         alert(`Task reassigned to ${candidate.name} as PRIMARY!`);
       }
@@ -349,21 +382,45 @@ export const AdminDashboard: React.FC = () => {
                       </button>
                     )}
 
-                    <button
-                      onClick={() => handleOpenSupportModal(rep.request_id, rep.id)}
-                      className="btn btn-primary"
-                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem', background: '#0284c7' }}
-                    >
-                      <UserPlus size={12} /> Assign Support
-                    </button>
+                    {rep.issue_type === 'Need Another Responder' && (
+                      <button
+                        onClick={() => handleOpenSupportModal(rep.request_id, rep.id, rep.issue_type)}
+                        className="btn btn-primary"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem', background: '#0284c7' }}
+                      >
+                        <UserPlus size={12} /> Assign Another Responder
+                      </button>
+                    )}
 
-                    <button
-                      onClick={() => handleOpenReassignModal(rep.request_id, rep.id)}
-                      className="btn btn-outline"
-                      style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem' }}
-                    >
-                      <UserCheck size={12} /> Reassign
-                    </button>
+                    {rep.issue_type === 'Need Volunteer' && (
+                      <button
+                        onClick={() => handleOpenSupportModal(rep.request_id, rep.id, rep.issue_type)}
+                        className="btn btn-primary"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem', background: '#10b981' }}
+                      >
+                        <UserPlus size={12} /> Assign Volunteer
+                      </button>
+                    )}
+
+                    {rep.issue_type === 'Cannot Handle Emergency' && (
+                      <button
+                        onClick={() => handleOpenReassignModal(rep.request_id, rep.id)}
+                        className="btn btn-outline"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.3rem' }}
+                      >
+                        <UserCheck size={12} /> Reassign Emergency
+                      </button>
+                    )}
+
+                    {(rep.issue_type === 'Need Another Responder' || rep.issue_type === 'Need Volunteer' || rep.issue_type === 'Cannot Handle Emergency') && (
+                      <button
+                        onClick={() => handleAcknowledgeReport(rep.id)}
+                        className="btn btn-outline"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                      >
+                        Acknowledge
+                      </button>
+                    )}
 
                     {!isResolved && (
                       <button
@@ -603,7 +660,7 @@ export const AdminDashboard: React.FC = () => {
 
               <div style={{ marginBottom: '1rem' }}>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
-                  Select Personnel (Responder or Volunteer)
+                  {actionModal?.candidateMode === 'RESPONDER' ? 'Select Available Responder' : 'Select Available Volunteer'}
                 </label>
                 <select
                   value={selectedPersonnelId}
@@ -612,22 +669,22 @@ export const AdminDashboard: React.FC = () => {
                   required
                   style={{ width: '100%', padding: '0.6rem' }}
                 >
-                  <option value="" disabled>-- Select available candidate --</option>
-                  <optgroup label="Emergency Responders">
-                    {responders.map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.name} ({r.responder_type}) • {r.is_available ? 'Available' : 'Busy'}
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="Community Volunteers">
-                    {volunteers.map(v => (
-                      <option key={v.id} value={v.id}>
-                        {v.name} ({(v as any).skills?.join(', ') || (v as any).capabilities?.join(', ') || 'Relief'}) • {v.is_available ? 'Available' : 'Busy'}
-                      </option>
-                    ))}
-                  </optgroup>
+                  <option value="" disabled>
+                    {actionModal?.candidateMode === 'RESPONDER'
+                      ? '-- Select another responder --'
+                      : '-- Select available volunteer --'}
+                  </option>
+                  {(actionModal?.candidateMode === 'RESPONDER' ? getFilteredActionCandidates('RESPONDER', actionModal.request) : getFilteredActionCandidates('VOLUNTEER', actionModal.request)).map((person: any) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name} ({person.responder_type || person.capabilities?.join(', ') || 'Volunteer'}) • {person.is_available ? 'Available' : 'Busy'} • {actionModal?.request ? `${Math.round(getDistanceKm(actionModal.request.latitude, actionModal.request.longitude, person.latitude, person.longitude))} km away` : 'Nearby'}
+                    </option>
+                  ))}
                 </select>
+                {((actionModal?.candidateMode === 'RESPONDER' && getFilteredActionCandidates('RESPONDER', actionModal.request).length === 0) || (actionModal?.candidateMode === 'VOLUNTEER' && getFilteredActionCandidates('VOLUNTEER', actionModal.request).length === 0)) && (
+                  <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#fca5a5' }}>
+                    No eligible {actionModal?.candidateMode === 'RESPONDER' ? 'responders' : 'volunteers'} are available right now.
+                  </div>
+                )}
               </div>
 
               {actionModal.type === 'REASSIGN' && (

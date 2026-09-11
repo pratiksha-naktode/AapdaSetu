@@ -44,7 +44,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
     case 'ACCEPTED':
       return (
         <span className="badge badge-status" style={{ borderColor: '#38bdf8', color: '#7dd3fc' }}>
-          <Navigation size={12} /> ACCEPTED
+          <Navigation size={12} /> RESPONDER ACCEPTED
         </span>
       );
     case 'ON_THE_WAY':

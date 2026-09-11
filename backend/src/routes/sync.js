@@ -24,7 +24,7 @@ router.post('/', async (req, res) => {
       const priorityResult = await calculatePriority(item);
 
       // 2. Persist with deduplication
-      const { request, isDuplicate } = repository.createRequest({
+      const { request, isDuplicate } = await repository.createRequest({
         ...item,
         ...priorityResult,
         is_offline_captured: true
@@ -32,7 +32,8 @@ router.post('/', async (req, res) => {
 
       // 3. Trigger alert if Critical or High and newly inserted
       if (!isDuplicate && (request.priority_level === 'CRITICAL' || request.priority_level === 'HIGH')) {
-        const topResponder = matchResponders(request, repository.getResponders())[0];
+        const responders = await repository.getResponders();
+        const topResponder = matchResponders(request, responders)[0];
         const targetPhone = topResponder ? topResponder.phone : '+919876543201';
         const alertMessage = `OFFLINE-SYNCED CRITICAL REQUEST #${request.id.slice(0, 8)}: ${request.priority_reason}. Location: ${request.latitude}, ${request.longitude}. Please respond.`;
 

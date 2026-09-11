@@ -6,7 +6,8 @@ import {
   determineRequiredResponderType, 
   determineRequiredCapability,
   calculateDistanceKm,
-  findBestVolunteerForResourceRequest
+  findBestVolunteerForResourceRequest,
+  findBestResponderForEmergencyRequest
 } from '../services/matchingService.js';
 
 let supabase = null;
@@ -212,6 +213,52 @@ export const repository = {
     return memoryStore.volunteers;
   },
 
+  async updateResponderLocation(id, { latitude, longitude, is_available } = {}) {
+    let responder = memoryStore.responders.find(r => r.id === id || r.user_id === id);
+    if (responder) {
+      if (latitude !== undefined && latitude !== null) responder.latitude = Number(latitude);
+      if (longitude !== undefined && longitude !== null) responder.longitude = Number(longitude);
+      if (is_available !== undefined) responder.is_available = Boolean(is_available);
+    }
+    if (supabase && typeof id === 'string' && id.length === 36 && id.includes('-')) {
+      try {
+        const updateData = {};
+        if (latitude !== undefined && latitude !== null) updateData.latitude = Number(latitude);
+        if (longitude !== undefined && longitude !== null) updateData.longitude = Number(longitude);
+        if (is_available !== undefined) updateData.is_available = Boolean(is_available);
+        if (Object.keys(updateData).length > 0) {
+          await supabase.from('responders').update(updateData).eq('id', id);
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase updateResponderLocation warning:', err.message);
+      }
+    }
+    return responder;
+  },
+
+  async updateVolunteerLocation(id, { latitude, longitude, is_available } = {}) {
+    let volunteer = memoryStore.volunteers.find(v => v.id === id || v.user_id === id);
+    if (volunteer) {
+      if (latitude !== undefined && latitude !== null) volunteer.latitude = Number(latitude);
+      if (longitude !== undefined && longitude !== null) volunteer.longitude = Number(longitude);
+      if (is_available !== undefined) volunteer.is_available = Boolean(is_available);
+    }
+    if (supabase && typeof id === 'string' && id.length === 36 && id.includes('-')) {
+      try {
+        const updateData = {};
+        if (latitude !== undefined && latitude !== null) updateData.latitude = Number(latitude);
+        if (longitude !== undefined && longitude !== null) updateData.longitude = Number(longitude);
+        if (is_available !== undefined) updateData.is_available = Boolean(is_available);
+        if (Object.keys(updateData).length > 0) {
+          await supabase.from('volunteers').update(updateData).eq('id', id);
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase updateVolunteerLocation warning:', err.message);
+      }
+    }
+    return volunteer;
+  },
+
   async enrichRequests(list) {
     if (!list || list.length === 0) return [];
     const responders = await this.getResponders();
@@ -355,6 +402,35 @@ export const repository = {
       updated_at: new Date().toISOString()
     };
 
+    // Automatic Nearest Responder Assignment for EMERGENCY requests
+    let autoAssignedResponder = null;
+    if (newRequest.request_type === 'EMERGENCY') {
+      const responders = await this.getResponders();
+      const activeMap = await this.getActiveAssignmentsMap();
+      const matchResult = findBestResponderForEmergencyRequest(newRequest, responders, activeMap);
+
+      if (matchResult.is_assigned && matchResult.responder) {
+        autoAssignedResponder = matchResult.responder;
+        newRequest.status = 'ASSIGNED';
+        newRequest.assigned_to_user_id = autoAssignedResponder.id || autoAssignedResponder.user_id;
+        newRequest.assigned_to = {
+          id: autoAssignedResponder.id || autoAssignedResponder.user_id,
+          name: autoAssignedResponder.name || autoAssignedResponder.full_name,
+          role: 'RESPONDER'
+        };
+        newRequest.assigned_responder_type = autoAssignedResponder.responder_type || 'RESCUE_TEAM';
+        newRequest.assigned_at = new Date().toISOString();
+        newRequest.assignment_method = 'AUTO — NEAREST AVAILABLE RESPONDER';
+        newRequest.assignment_explanation = matchResult.explanation;
+        newRequest.responder_distance_km = matchResult.distance_km;
+        newRequest.responder_active_tasks = matchResult.active_tasks;
+      } else {
+        newRequest.status = 'PENDING';
+        newRequest.assignment_method = 'PENDING — NO AVAILABLE RESPONDER';
+        newRequest.assignment_explanation = matchResult.explanation;
+      }
+    }
+
     // Automatic Nearest Volunteer Assignment for RESOURCE requests
     let autoAssignedVolunteer = null;
     if (newRequest.request_type === 'RESOURCE') {
@@ -365,9 +441,9 @@ export const repository = {
       if (matchResult.is_assigned && matchResult.volunteer) {
         autoAssignedVolunteer = matchResult.volunteer;
         newRequest.status = 'ASSIGNED';
-        newRequest.assigned_to_user_id = autoAssignedVolunteer.id;
+        newRequest.assigned_to_user_id = autoAssignedVolunteer.id || autoAssignedVolunteer.user_id;
         newRequest.assigned_to = {
-          id: autoAssignedVolunteer.id,
+          id: autoAssignedVolunteer.id || autoAssignedVolunteer.user_id,
           name: autoAssignedVolunteer.name || autoAssignedVolunteer.full_name,
           role: 'VOLUNTEER'
         };
@@ -436,6 +512,44 @@ export const repository = {
       }
     }
 
+    // If auto-assigned responder, record in request_assignments and request_status_history
+    if (autoAssignedResponder) {
+      const respId = autoAssignedResponder.id || autoAssignedResponder.user_id;
+      await this.recordAssignment({
+        request_id: newRequest.id,
+        assigned_to_user_id: respId,
+        assignment_role: 'PRIMARY',
+        status: 'ASSIGNED',
+        assigned_by_user_id: null
+      });
+
+      if (supabase) {
+        const isUuid = respId && respId.length === 36 && respId.includes('-');
+        try {
+          await supabase.from('request_status_history').insert({
+            request_id: newRequest.id,
+            previous_status: 'PENDING',
+            new_status: 'ASSIGNED',
+            changed_by_user_id: isUuid ? respId : null,
+            notes: newRequest.assignment_explanation,
+            changed_at: newRequest.assigned_at
+          });
+        } catch (hErr) {
+          console.warn('[Repository] Supabase auto-assignment status history warning:', hErr.message);
+        }
+      }
+
+      memoryStore.statusHistory.unshift({
+        id: uuidv4(),
+        request_id: newRequest.id,
+        previous_status: 'PENDING',
+        new_status: 'ASSIGNED',
+        changed_by: 'Auto Responder Dispatch Engine',
+        notes: newRequest.assignment_explanation,
+        timestamp: newRequest.assigned_at
+      });
+    }
+
     // If auto-assigned, record in request_assignments and request_status_history
     if (autoAssignedVolunteer) {
       await this.recordAssignment({
@@ -491,32 +605,86 @@ export const repository = {
     return true;
   },
 
-  updateRequestStatus(id, newStatus, changedBy = 'System', notes = '') {
-    const request = memoryStore.requests.find(r => r.id === id);
+  async updateRequestStatus(id, newStatus, changedBy = 'System', notes = '', changedByUserId = null) {
+    let request = memoryStore.requests.find(r => r.id === id || r.client_local_id === id);
+
+    // If not in memory store, fetch from Supabase
+    if (!request && supabase && typeof id === 'string' && id.length === 36 && id.includes('-')) {
+      try {
+        const { data, error } = await supabase.from('emergency_requests').select('*').eq('id', id).maybeSingle();
+        if (!error && data) {
+          request = data;
+          memoryStore.requests.unshift(request);
+        }
+      } catch (err) {
+        console.warn('[Repository] Supabase getRequest in updateRequestStatus error:', err.message);
+      }
+    }
+
     if (!request) return null;
 
     const previousStatus = request.status;
+    const nowIso = new Date().toISOString();
     request.status = newStatus;
-    request.updated_at = new Date().toISOString();
+    request.updated_at = nowIso;
+
     if (newStatus === 'RESOLVED') {
-      request.resolved_at = new Date().toISOString();
+      request.resolved_at = request.resolved_at || nowIso;
     }
 
-    if (supabase) {
-      supabase.from('emergency_requests').update({
-        status: newStatus,
-        updated_at: request.updated_at,
-        resolved_at: request.resolved_at || null
-      }).eq('id', id).then();
+    if (supabase && typeof id === 'string' && id.length === 36 && id.includes('-')) {
+      try {
+        const updatePayload = {
+          status: newStatus,
+          updated_at: nowIso
+        };
+        if (newStatus === 'RESOLVED') {
+          updatePayload.resolved_at = request.resolved_at || nowIso;
+        }
 
-      supabase.from('request_status_history').insert({
-        request_id: request.id,
-        previous_status: previousStatus,
-        new_status: newStatus,
-        notes: notes || `Status changed to ${newStatus} by ${changedBy}`,
-        changed_at: new Date().toISOString()
-      }).then();
+        const { error: reqUpdateErr } = await supabase.from('emergency_requests').update(updatePayload).eq('id', id);
+        if (reqUpdateErr) {
+          console.warn('[Repository] Supabase update emergency_requests error:', reqUpdateErr.message);
+        }
+
+        const isUserUuid = typeof changedByUserId === 'string' && changedByUserId.length === 36 && changedByUserId.includes('-');
+
+        await supabase.from('request_status_history').insert({
+          request_id: request.id,
+          previous_status: previousStatus,
+          new_status: newStatus,
+          changed_by_user_id: isUserUuid ? changedByUserId : null,
+          notes: notes || `Status changed to ${newStatus} by ${changedBy}`,
+          changed_at: nowIso
+        });
+
+        // Also update request_assignments if exists
+        const assignmentUpdate = {
+          status: newStatus,
+          updated_at: nowIso
+        };
+        if (newStatus === 'ACCEPTED') {
+          assignmentUpdate.accepted_at = nowIso;
+        }
+        if (newStatus === 'RESOLVED') {
+          assignmentUpdate.completed_at = nowIso;
+        }
+
+        await supabase.from('request_assignments').update(assignmentUpdate).eq('request_id', id);
+      } catch (err) {
+        console.warn('[Repository] Supabase updateRequestStatus warning:', err.message);
+      }
     }
+
+    // Also update in-memory requestAssignments
+    memoryStore.requestAssignments
+      .filter(a => a.request_id === id)
+      .forEach(a => {
+        a.status = newStatus;
+        if (newStatus === 'ACCEPTED' && !a.accepted_at) a.accepted_at = nowIso;
+        if (newStatus === 'RESOLVED' && !a.completed_at) a.completed_at = nowIso;
+        a.updated_at = nowIso;
+      });
 
     memoryStore.statusHistory.unshift({
       id: uuidv4(),
@@ -524,25 +692,28 @@ export const repository = {
       previous_status: previousStatus,
       new_status: newStatus,
       changed_by: changedBy,
-      notes,
-      timestamp: new Date().toISOString()
+      notes: notes || `Status changed to ${newStatus} by ${changedBy}`,
+      timestamp: nowIso
     });
 
-    return request;
+    const [enriched] = await this.enrichRequests([request]);
+    return enriched || request;
   },
 
   async getActiveAssignmentsMap() {
     const activeMap = {};
+    const countedRequestIds = new Set();
+
     if (supabase) {
       try {
         const { data, error } = await supabase
           .from('emergency_requests')
-          .select('assigned_to_user_id')
-          .not('assigned_to_user_id', 'is', null)
-          .not('status', 'in', '("RESOLVED","CANCELLED")');
+          .select('id, assigned_to_user_id, status')
+          .not('assigned_to_user_id', 'is', null);
         if (!error && data) {
           data.forEach(r => {
-            if (r.assigned_to_user_id) {
+            if (r.assigned_to_user_id && !['RESOLVED', 'CANCELLED'].includes((r.status || '').toUpperCase())) {
+              countedRequestIds.add(r.id);
               activeMap[r.assigned_to_user_id] = (activeMap[r.assigned_to_user_id] || 0) + 1;
             }
           });
@@ -551,11 +722,17 @@ export const repository = {
         console.warn('[Repository] Error querying active assignments from Supabase:', err.message);
       }
     }
-    // Also include in-memory active assignments
+
+    // Include in-memory active assignments not already counted from Supabase
     memoryStore.requests
-      .filter(r => r.assigned_to && r.assigned_to.id && !['RESOLVED', 'CANCELLED'].includes(r.status))
+      .filter(r => (r.assigned_to_user_id || (r.assigned_to && r.assigned_to.id)) && !['RESOLVED', 'CANCELLED'].includes((r.status || '').toUpperCase()))
       .forEach(r => {
-        activeMap[r.assigned_to.id] = (activeMap[r.assigned_to.id] || 0) + 1;
+        if (!countedRequestIds.has(r.id)) {
+          const uid = r.assigned_to_user_id || r.assigned_to?.id;
+          if (uid) {
+            activeMap[uid] = (activeMap[uid] || 0) + 1;
+          }
+        }
       });
 
     return activeMap;
@@ -616,6 +793,15 @@ export const repository = {
     request.status = 'ASSIGNED';
     request.updated_at = nowIso;
     request.assigned_at = nowIso;
+
+    const memReq = memoryStore.requests.find(r => r.id === id || r.client_local_id === id);
+    if (memReq) {
+      memReq.assigned_to = assignedTo;
+      memReq.assigned_to_user_id = assignedTo.id;
+      memReq.status = 'ASSIGNED';
+      memReq.updated_at = nowIso;
+      memReq.assigned_at = nowIso;
+    }
 
     if (supabase) {
       const isUuid = assignedTo.id && assignedTo.id.length === 36 && assignedTo.id.includes('-');

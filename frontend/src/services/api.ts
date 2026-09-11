@@ -3,18 +3,40 @@ import { queueOfflineRequest, syncOfflineQueue } from './offlineStorage';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
+function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('varahi_auth_token');
+  const storedUser = localStorage.getItem('varahi_auth_user');
+  let userId = '';
+  if (storedUser) {
+    try {
+      userId = JSON.parse(storedUser).id || '';
+    } catch {
+      // Ignore
+    }
+  }
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    ...(userId ? { 'x-user-id': userId } : {})
+  };
+}
+
 export const api = {
   // Requests
   async getRequests(params?: { type?: string; status?: string; priority?: string }): Promise<EmergencyRequest[]> {
     const query = new URLSearchParams(params as any).toString();
-    const res = await fetch(`${API_BASE}/api/requests${query ? `?${query}` : ''}`);
+    const res = await fetch(`${API_BASE}/api/requests${query ? `?${query}` : ''}`, {
+      headers: getAuthHeaders()
+    });
     if (!res.ok) throw new Error('Failed to fetch requests');
     const data = await res.json();
     return data.requests;
   },
 
   async getRequestById(id: string): Promise<{ request: EmergencyRequest; matchingCandidates: any[] }> {
-    const res = await fetch(`${API_BASE}/api/requests/${id}`);
+    const res = await fetch(`${API_BASE}/api/requests/${id}`, {
+      headers: getAuthHeaders()
+    });
     if (!res.ok) throw new Error('Failed to fetch request');
     return res.json();
   },
@@ -33,7 +55,7 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/requests/emergency`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(data)
       });
       if (!res.ok) throw new Error('Network response not ok');
@@ -58,7 +80,7 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/requests/resource`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(data)
       });
       if (!res.ok) throw new Error('Network response not ok');
@@ -73,7 +95,7 @@ export const api = {
   async updateRequestStatus(id: string, status: string, changedBy: string = 'User', notes: string = ''): Promise<EmergencyRequest> {
     const res = await fetch(`${API_BASE}/api/requests/${id}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ status, changed_by: changedBy, notes })
     });
     if (!res.ok) throw new Error('Failed to update status');
@@ -82,24 +104,47 @@ export const api = {
   },
 
   async getMatches(id: string): Promise<any> {
-    const res = await fetch(`${API_BASE}/api/requests/${id}/matches`);
+    const res = await fetch(`${API_BASE}/api/requests/${id}/matches`, {
+      headers: getAuthHeaders()
+    });
     if (!res.ok) throw new Error('Failed to fetch matches');
     return res.json();
   },
 
   async assignRequest(id: string, assignedTo: { id: string; name: string; role: string }): Promise<EmergencyRequest> {
-    const token = localStorage.getItem('varahi_auth_token');
     const res = await fetch(`${API_BASE}/api/requests/${id}/assign`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({ assigned_to: assignedTo })
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || 'Failed to assign request');
+    }
+    const data = await res.json();
+    return data.request;
+  },
+
+  /**
+   * Responder accepts an assigned task — only updates status to ACCEPTED.
+   * The task must already be assigned to this responder.
+   */
+  async acceptTask(requestId: string, responderName: string): Promise<EmergencyRequest> {
+    const res = await fetch(`${API_BASE}/api/requests/${requestId}/status`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        status: 'ACCEPTED',
+        changed_by: responderName,
+        notes: 'Responder acknowledged and accepted the task'
+      })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed to accept task');
     }
     const data = await res.json();
     return data.request;
@@ -129,6 +174,22 @@ export const api = {
     if (!res.ok) throw new Error('Failed to accept request');
     const data = await res.json();
     return data.request;
+  },
+
+  async updateResponderLocation(responderId: string, location: { latitude: number; longitude: number; is_available?: boolean }): Promise<void> {
+    await fetch(`${API_BASE}/api/responders/${responderId}/location`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(location)
+    });
+  },
+
+  async updateVolunteerLocation(volunteerId: string, location: { latitude: number; longitude: number; is_available?: boolean }): Promise<void> {
+    await fetch(`${API_BASE}/api/volunteers/${volunteerId}/location`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(location)
+    });
   },
 
   // Dashboard Stats & Facilities
@@ -168,7 +229,10 @@ export const api = {
   }): Promise<any> {
     const res = await fetch(`${API_BASE}/api/requests/${requestId}/reports`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(data)
     });
     if (!res.ok) {

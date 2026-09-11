@@ -30,22 +30,70 @@ export const ResponderDashboard: React.FC = () => {
   const [submittingReport, setSubmittingReport] = useState<boolean>(false);
   const [reportSuccessMessage, setReportSuccessMessage] = useState<string | null>(null);
 
+  const [locationEnabled, setLocationEnabled] = useState<boolean>(false);
+  const [locating, setLocating] = useState<boolean>(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
   // Active responder identity from authenticated session (with development fallback)
   const activeResponder = {
     id: (user?.role === 'RESPONDER' ? user?.id : null) || 'dev-responder-alpha',
     name: (user?.role === 'RESPONDER' ? user?.full_name : null) || 'NDRF Rescue Unit Alpha (Capt. Rajesh)'
   };
 
+  const handleEnableLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setLocating(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setUserCoords(coords);
+        setLocationEnabled(true);
+        setLocating(false);
+        setLocationError(null);
+
+        // Update location on backend for automatic matching
+        api.updateResponderLocation(activeResponder.id, {
+          latitude: coords.lat,
+          longitude: coords.lon,
+          is_available: true
+        }).catch(err => console.warn('Could not sync responder location to backend:', err));
+      },
+      (err) => {
+        setLocating(false);
+        setLocationEnabled(false);
+        setLocationError('Location permission is required for automatic nearby-task assignment.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  // Attempt initial location check on mount
   useEffect(() => {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
-        pos => setUserCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-        () => setUserCoords({ lat: 16.5449, lon: 81.5212 })
+        pos => {
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          setUserCoords(coords);
+          setLocationEnabled(true);
+          api.updateResponderLocation(activeResponder.id, {
+            latitude: coords.lat,
+            longitude: coords.lon,
+            is_available: true
+          }).catch(() => {});
+        },
+        () => {
+          // Keep prompt for responder to click [Enable Location]
+        },
+        { timeout: 5000 }
       );
-    } else {
-      setUserCoords({ lat: 16.5449, lon: 81.5212 });
     }
-  }, []);
+  }, [activeResponder.id]);
 
   useEffect(() => {
     loadRequests();
@@ -55,8 +103,7 @@ export const ResponderDashboard: React.FC = () => {
 
   const loadRequests = async () => {
     try {
-      // Filter for EMERGENCY requests
-      const list = await api.getRequests({ type: 'EMERGENCY' });
+      const list = await api.getRequests();
       setRequests(list);
     } catch (err) {
       console.error('Error fetching responder requests:', err);
@@ -65,17 +112,21 @@ export const ResponderDashboard: React.FC = () => {
     }
   };
 
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [acceptedToast, setAcceptedToast] = useState<string | null>(null);
+
   const handleAccept = async (reqId: string) => {
+    setAcceptingId(reqId);
     try {
-      await api.assignRequest(reqId, {
-        id: activeResponder.id,
-        name: activeResponder.name,
-        role: 'RESPONDER'
-      });
-      await api.updateRequestStatus(reqId, 'ACCEPTED', activeResponder.name, 'Unit acknowledged task dispatch');
-      loadRequests();
+      await api.acceptTask(reqId, activeResponder.name);
+      await loadRequests();
+      setAcceptedToast('Task Accepted');
+      setTimeout(() => setAcceptedToast(null), 4000);
     } catch (err: any) {
-      alert('Failed to accept request: ' + err.message);
+      console.error('[Accept Task] Error:', err);
+      alert('Failed to accept: ' + (err.message || 'Unknown error'));
+    } finally {
+      setAcceptingId(null);
     }
   };
 
@@ -166,6 +217,75 @@ export const ResponderDashboard: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {/* Responder Location Status Banner */}
+      <div className="card" style={{ padding: '1.25rem', background: locationEnabled ? 'rgba(16, 185, 129, 0.08)' : 'rgba(56, 189, 248, 0.08)', border: `1px solid ${locationEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(56, 189, 248, 0.3)'}`, borderRadius: 'var(--radius-md)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{ padding: '0.6rem', borderRadius: '50%', background: locationEnabled ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.2)', color: locationEnabled ? '#34d399' : '#38bdf8' }}>
+              <Navigation size={20} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.95rem', fontWeight: 800, color: locationEnabled ? '#86efac' : '#e2e8f0' }}>
+                {locationEnabled ? '✅ Location Enabled' : '📍 Enable Location'}
+              </div>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.15rem', margin: 0 }}>
+                {locationEnabled
+                  ? 'Your current location is being used for rescue task matching.'
+                  : 'Allow location access so VARAHI can find nearby emergency requests and assign suitable rescue tasks.'}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            {!locationEnabled ? (
+              <button
+                onClick={handleEnableLocation}
+                disabled={locating}
+                className="btn btn-primary"
+                style={{ padding: '0.45rem 1.1rem', fontSize: '0.85rem', gap: '0.4rem', background: '#0284c7' }}
+              >
+                <Navigation size={14} /> {locating ? 'Acquiring GPS...' : 'Enable Location'}
+              </button>
+            ) : (
+              <span style={{ fontSize: '0.8rem', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid #10b981', padding: '0.3rem 0.8rem', borderRadius: 'var(--radius-sm)', fontWeight: 700 }}>
+                ✓ GPS ACTIVE
+              </span>
+            )}
+          </div>
+        </div>
+
+        {locationError && (
+          <div style={{ marginTop: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', color: '#fca5a5', padding: '0.6rem 0.85rem', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>❌ {locationError}</span>
+            <button
+              onClick={handleEnableLocation}
+              className="btn btn-outline"
+              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}
+            >
+              Try Again
+            </button>
+          </div>
+        )}
+      </div>
+
+      {acceptedToast && (
+        <div style={{
+          background: 'rgba(16, 185, 129, 0.15)',
+          border: '1px solid #10b981',
+          color: '#4ade80',
+          padding: '0.85rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.6rem',
+          fontWeight: 700,
+          fontSize: '0.95rem',
+          boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)'
+        }}>
+          <CheckCircle size={20} color="#4ade80" /> {acceptedToast} — Task is now actively underway.
+        </div>
+      )}
 
       {/* Triage Queue List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -352,14 +472,18 @@ export const ResponderDashboard: React.FC = () => {
                             Assign Recommended ({req.matching.recommended_candidate.name.split(' ')[0]})
                           </button>
                         )}
-                        <button
-                          onClick={() => handleAccept(req.id)}
-                          className="btn btn-critical"
-                          style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
-                        >
-                          Accept Task
-                        </button>
                       </>
+                    )}
+
+                    {isAssignedToMe && req.status === 'ASSIGNED' && !isResolved && (
+                      <button
+                        onClick={() => handleAccept(req.id)}
+                        disabled={acceptingId === req.id}
+                        className="btn btn-critical"
+                        style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+                      >
+                        {acceptingId === req.id ? '⏳ Accepting...' : '✅ Accept Task'}
+                      </button>
                     )}
 
                     {isAssignedToMe && req.status === 'ACCEPTED' && (

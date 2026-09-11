@@ -39,13 +39,19 @@ router.post('/:id/accept', async (req, res) => {
     return res.status(result.status || 400).json({ error: result.error, code: result.code });
   }
 
-  repository.updateRequestStatus(request_id, 'ACCEPTED', vol ? vol.name : 'Volunteer');
+  await repository.updateRequestStatus(request_id, 'ACCEPTED', vol ? vol.name : 'Volunteer');
   const fresh = await repository.getRequestById(request_id);
 
   res.json({
     message: 'Volunteer successfully accepted request',
     request: fresh
   });
+});
+
+router.patch('/:id/location', async (req, res) => {
+  const { latitude, longitude, is_available } = req.body;
+  const updated = await repository.updateVolunteerLocation(req.params.id, { latitude, longitude, is_available });
+  res.json({ message: 'Volunteer location updated successfully', volunteer: updated });
 });
 
 export default router;

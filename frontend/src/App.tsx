@@ -8,6 +8,7 @@ import { LandingPage } from './pages/LandingPage';
 import { CitizenDashboard } from './pages/Citizen/CitizenDashboard';
 import { CitizenProfile } from './pages/Citizen/CitizenProfile';
 import { CreateEmergencyRequest } from './pages/Citizen/CreateEmergencyRequest';
+import { ReportEmergencyRescue } from './pages/Citizen/ReportEmergencyRescue';
 import { CreateResourceRequest } from './pages/Citizen/CreateResourceRequest';
 import { RequestTracking } from './pages/Citizen/RequestTracking';
 import { ResponderDashboard } from './pages/Responder/ResponderDashboard';
@@ -126,6 +127,30 @@ export const App: React.FC = () => {
                 element={
                   <ProtectedRoute allowedRoles={['CITIZEN', 'ADMIN']}>
                     <CreateEmergencyRequest isSimulatedOffline={isSimulatedOffline} />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/citizen/quick-emergency"
+                element={
+                  <ProtectedRoute allowedRoles={['CITIZEN', 'ADMIN']}>
+                    <CreateEmergencyRequest isSimulatedOffline={isSimulatedOffline} />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/citizen/report-rescue"
+                element={
+                  <ProtectedRoute allowedRoles={['CITIZEN', 'ADMIN']}>
+                    <ReportEmergencyRescue isSimulatedOffline={isSimulatedOffline} />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/citizen/emergency-rescue"
+                element={
+                  <ProtectedRoute allowedRoles={['CITIZEN', 'ADMIN']}>
+                    <ReportEmergencyRescue isSimulatedOffline={isSimulatedOffline} />
                   </ProtectedRoute>
                 }
               />

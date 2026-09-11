@@ -63,8 +63,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Link to="/citizen" className="btn btn-outline" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', gap: '0.3rem' }}>
               Dashboard
             </Link>
-            <Link to="/citizen/emergency" className="btn btn-critical" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', gap: '0.3rem' }}>
-              <PlusCircle size={14} /> Create Request
+            <Link to="/citizen/emergency" className="btn btn-critical" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', gap: '0.3rem', fontWeight: 800 }}>
+              🚨 Report Emergency
             </Link>
             <Link to="/citizen" className="btn btn-outline" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', gap: '0.3rem' }}>
               <List size={14} /> My Requests

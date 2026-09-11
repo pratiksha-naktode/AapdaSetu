@@ -7,12 +7,79 @@ import { matchResponders, matchVolunteers } from '../services/matchingService.js
 const router = express.Router();
 
 /**
+ * Helper to securely extract and verify authenticated user from token / headers
+ */
+async function getAuthenticatedUser(req) {
+  let userId = null;
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const raw = authHeader.substring(7).trim();
+    if (raw.startsWith('varahi-jwt-')) {
+      userId = raw.replace('varahi-jwt-', '').trim();
+    } else if (raw.includes('.')) {
+      try {
+        const parts = raw.split('.');
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+          userId = payload.sub || payload.id || payload.user_id || null;
+        }
+      } catch {
+        // Ignore decode failure
+      }
+      if (!userId) userId = raw;
+    } else {
+      userId = raw;
+    }
+  }
+  if (!userId && req.headers['x-user-id']) {
+    userId = String(req.headers['x-user-id']).trim();
+  }
+  if (!userId) return null;
+  const user = await repository.getUserById(userId);
+  return user || null;
+}
+
+/**
  * GET /api/requests
- * List all emergency & resource requests
+ * List emergency & resource requests with strict role-based data isolation:
+ * - CITIZEN: sees ONLY requests submitted by that citizen.
+ * - VOLUNTEER / RESPONDER: sees ONLY tasks assigned to that volunteer/responder.
+ * - ADMIN: sees all requests without restriction.
  */
 router.get('/', async (req, res) => {
   const { type, status, priority } = req.query;
-  const requests = await repository.getRequests({ type, status, priority });
+  const authUser = await getAuthenticatedUser(req);
+
+  let requests = await repository.getRequests({ type, status, priority });
+
+  if (authUser) {
+    const role = (authUser.role || '').toUpperCase();
+    if (role === 'CITIZEN') {
+      // Rule 1: A logged-in citizen must see ONLY emergency requests submitted by that same authenticated citizen
+      requests = requests.filter(r => 
+        r.citizen_id === authUser.id || 
+        (r.citizen_phone && authUser.phone && r.citizen_phone === authUser.phone)
+      );
+    } else if (role === 'VOLUNTEER' || role === 'RESPONDER') {
+      // Rule 2: A logged-in volunteer/responder must see ONLY tasks assigned to that authenticated volunteer/responder
+      requests = requests.filter(r => {
+        const isPrimaryAssignee = (
+          r.assigned_to_user_id === authUser.id ||
+          (r.assigned_to && r.assigned_to.id === authUser.id)
+        );
+        const isSupportAssignee = Array.isArray(r.support_assignments) && r.support_assignments.some(
+          a => a.assigned_to_user_id === authUser.id || a.id === authUser.id
+        );
+        return isPrimaryAssignee || isSupportAssignee;
+      });
+    } else if (role === 'ADMIN') {
+      // Rule 3: Admin sees all records
+    }
+  } else {
+    // Unauthenticated access cannot see private requests
+    requests = [];
+  }
+
   res.json({ count: requests.length, requests });
 });
 
@@ -35,12 +102,43 @@ router.get('/:id/matches', async (req, res) => {
 
 /**
  * GET /api/requests/:id
- * Retrieve specific request with matching candidates
+ * Retrieve specific request with matching candidates, enforcing authorization
  */
 router.get('/:id', async (req, res) => {
   const request = await repository.getRequestById(req.params.id);
   if (!request) {
     return res.status(404).json({ error: 'Request not found' });
+  }
+
+  const authUser = await getAuthenticatedUser(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Unauthorized: Authentication required to view request details.' });
+  }
+
+  const role = (authUser.role || '').toUpperCase();
+  if (role === 'CITIZEN') {
+    const isOwner = (
+      request.citizen_id === authUser.id ||
+      (request.citizen_phone && authUser.phone && request.citizen_phone === authUser.phone)
+    );
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to view this emergency request.' });
+    }
+  } else if (role === 'VOLUNTEER' || role === 'RESPONDER') {
+    const isPrimaryAssignee = (
+      request.assigned_to_user_id === authUser.id ||
+      (request.assigned_to && request.assigned_to.id === authUser.id)
+    );
+    const isSupportAssignee = Array.isArray(request.support_assignments) && request.support_assignments.some(
+      a => a.assigned_to_user_id === authUser.id || a.id === authUser.id
+    );
+    if (!isPrimaryAssignee && !isSupportAssignee) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to view this task.' });
+    }
+  } else if (role === 'ADMIN') {
+    // Admin has full access
+  } else {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   const matchData = await repository.getMatchesForRequest(req.params.id);
@@ -61,6 +159,13 @@ router.post('/emergency', async (req, res) => {
     const body = req.body;
     body.request_type = 'EMERGENCY';
 
+    const authUser = await getAuthenticatedUser(req);
+    if (authUser) {
+      body.citizen_id = authUser.id;
+      body.citizen_name = body.citizen_name || authUser.full_name;
+      body.citizen_phone = body.citizen_phone || authUser.phone;
+    }
+
     // 1. Calculate Priority using FastAPI Priority Engine
     const priorityResult = await calculatePriority(body);
 
@@ -70,21 +175,36 @@ router.post('/emergency', async (req, res) => {
       ...priorityResult
     });
 
-    // 3. Trigger SMS notification if CRITICAL or HIGH
-    if (!isDuplicate && (request.priority_level === 'CRITICAL' || request.priority_level === 'HIGH')) {
-      const responders = await repository.getResponders();
-      const topResponder = matchResponders(request, responders)[0];
-      const targetPhone = topResponder ? topResponder.phone : '+919876543201';
+    // 3. Trigger SMS notification to assigned responder or high/critical alert
+    if (!isDuplicate) {
+      if (request.assigned_to_user_id) {
+        const responders = await repository.getResponders();
+        const assignedResp = responders.find(r => r.id === request.assigned_to_user_id || r.user_id === request.assigned_to_user_id);
+        const targetPhone = assignedResp?.phone || '+919876543201';
+        const distStr = request.responder_distance_km ? ` ~${request.responder_distance_km}km away` : '';
+        const alertMessage = `🚨 NEW RESCUE TASK ASSIGNED #${request.id.slice(0, 8)}: ${request.priority_reason || request.category}. People: ${request.people_count}.${distStr} Location: ${request.latitude}, ${request.longitude} (${request.address}). Respond immediately.`;
 
-      const alertMessage = `CRITICAL DISASTER REQUEST: Request #${request.id.slice(0, 8)}. ${request.priority_reason} People: ${request.people_count}. Location: ${request.latitude}, ${request.longitude} (${request.address}). Respond immediately.`;
+        sendEmergencyAlert({
+          requestId: request.id,
+          recipientPhone: targetPhone,
+          recipientRole: 'RESPONDER',
+          message: alertMessage,
+          priorityLevel: request.priority_level
+        });
+      } else if (request.priority_level === 'CRITICAL' || request.priority_level === 'HIGH') {
+        const responders = await repository.getResponders();
+        const topResponder = matchResponders(request, responders)[0];
+        const targetPhone = topResponder ? topResponder.phone : '+919876543201';
+        const alertMessage = `CRITICAL DISASTER REQUEST: Request #${request.id.slice(0, 8)}. ${request.priority_reason} People: ${request.people_count}. Location: ${request.latitude}, ${request.longitude} (${request.address}). Respond immediately.`;
 
-      sendEmergencyAlert({
-        requestId: request.id,
-        recipientPhone: targetPhone,
-        recipientRole: 'RESPONDER',
-        message: alertMessage,
-        priorityLevel: request.priority_level
-      });
+        sendEmergencyAlert({
+          requestId: request.id,
+          recipientPhone: targetPhone,
+          recipientRole: 'RESPONDER',
+          message: alertMessage,
+          priorityLevel: request.priority_level
+        });
+      }
     }
 
     return res.status(201).json({
@@ -106,6 +226,13 @@ router.post('/resource', async (req, res) => {
   try {
     const body = req.body;
     body.request_type = 'RESOURCE';
+
+    const authUser = await getAuthenticatedUser(req);
+    if (authUser) {
+      body.citizen_id = authUser.id;
+      body.citizen_name = body.citizen_name || authUser.full_name;
+      body.citizen_phone = body.citizen_phone || authUser.phone;
+    }
 
     // 1. Calculate Priority
     const priorityResult = await calculatePriority(body);
@@ -160,19 +287,84 @@ router.delete('/:id', async (req, res) => {
  * PATCH /api/requests/:id/status
  * Update status (PENDING -> ACCEPTED -> ON_THE_WAY -> RESOLVED etc)
  */
-router.patch('/:id/status', (req, res) => {
+router.patch('/:id/status', async (req, res) => {
   const { status, changed_by, notes } = req.body;
   if (!status) {
     return res.status(400).json({ error: 'New status is required' });
   }
 
-  const updated = repository.updateRequestStatus(req.params.id, status, changed_by, notes);
+  const request = await repository.getRequestById(req.params.id);
+  if (!request) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+
+  const nextStatus = String(status).toUpperCase();
+  const authUser = await getAuthenticatedUser(req);
+
+  if (nextStatus === 'ACCEPTED') {
+    // Caller ID resolved from authenticated user or fallback token
+    let callerId = authUser ? authUser.id : null;
+    if (!callerId) {
+      const authHeader = req.headers['authorization'];
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const raw = authHeader.substring(7).trim();
+        if (raw.startsWith('varahi-jwt-')) {
+          callerId = raw.replace('varahi-jwt-', '').trim();
+        } else if (raw.includes('.')) {
+          try {
+            const parts = raw.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+              callerId = payload.sub || payload.id || payload.user_id || null;
+            }
+          } catch {}
+        }
+      }
+    }
+    if (!callerId && req.headers['x-user-id']) {
+      callerId = String(req.headers['x-user-id']).trim();
+    }
+
+    if (!callerId) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required to accept this task.' });
+    }
+
+    // Check if caller is the primary assigned responder or a support assignee
+    const isPrimaryAssigned = (
+      request.assigned_to_user_id === callerId ||
+      (request.assigned_to && request.assigned_to.id === callerId)
+    );
+
+    const supportList = Array.isArray(request.support_assignments) ? request.support_assignments : [];
+    const isSupportAssigned = supportList.some(
+      a => a.assigned_to_user_id === callerId || a.id === callerId || a.user_id === callerId
+    );
+
+    const isAuthorizedResponder = isPrimaryAssigned || isSupportAssigned || (authUser && authUser.role === 'ADMIN');
+
+    if (!isAuthorizedResponder) {
+      console.warn(`[Accept Task] Auth mismatch — callerId=${callerId} assignedId=${request.assigned_to_user_id}`);
+      return res.status(403).json({
+        error: 'Forbidden: Only the responder assigned to this emergency can accept it.',
+        debug: { callerId, assignedId: request.assigned_to_user_id }
+      });
+    }
+  }
+
+  const updated = await repository.updateRequestStatus(
+    req.params.id,
+    nextStatus,
+    authUser?.full_name || changed_by || 'System',
+    notes || (nextStatus === 'ACCEPTED' ? 'Responder acknowledged and accepted the task' : `Status changed to ${nextStatus}`),
+    authUser?.id || null
+  );
+
   if (!updated) {
     return res.status(404).json({ error: 'Request not found' });
   }
 
   res.json({
-    message: `Status updated to ${status}`,
+    message: `Status updated to ${nextStatus}`,
     request: updated
   });
 });

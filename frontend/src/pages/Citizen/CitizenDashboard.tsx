@@ -5,6 +5,7 @@ import { getLocalHistory } from '../../services/offlineStorage';
 import { EmergencyRequest } from '../../types';
 import { PriorityBadge, StatusBadge } from '../../components/common/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
+import { VoiceGuide } from '../../components/common/VoiceGuide';
 import { AlertCircle, Package, ArrowRight, ShieldCheck, MapPin, Users, User, Camera, Navigation, Phone, ExternalLink, Building2, ShieldAlert } from 'lucide-react';
 
 export const CitizenDashboard: React.FC = () => {
@@ -170,11 +171,39 @@ export const CitizenDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Primary Action Buttons */}
+      {/* Feature 1: Bilingual Voice Guide (English / Telugu) */}
+      <VoiceGuide
+        defaultMessageKey="citizen_dashboard"
+        availableKeys={['citizen_dashboard', 'emergency_page', 'location', 'after_submission']}
+      />
+
+      {/* Quick Emergency Action Button (Flow B — Quick GPS + Voice) */}
+      <Link
+        to="/citizen/emergency"
+        id="report-emergency-btn"
+        className="btn-emergency-hero"
+        aria-label="Quick Emergency SOS — GPS and Voice based emergency flow"
+      >
+        <div className="btn-emergency-hero-content">
+          <span className="btn-emergency-icon" aria-hidden="true">🚨</span>
+          <div className="btn-emergency-text-wrap">
+            <span className="btn-emergency-title">EMERGENCY</span>
+            <span className="btn-emergency-subtitle">Quick GPS + Voice Emergency SOS • ఎమర్జెన్సీ వాయిస్ రిపోర్ట్</span>
+          </div>
+        </div>
+        <div className="btn-emergency-action-badge">
+          <span>QUICK SOS</span>
+          <ArrowRight size={20} />
+        </div>
+      </Link>
+
+      {/* Primary Action Cards */}
       <div className="grid-2">
+        {/* Flow A — Original Detailed Report Emergency Rescue */}
         <Link
-          to="/citizen/emergency"
+          to="/citizen/report-rescue"
           style={{ textDecoration: 'none' }}
+          aria-label="Report Emergency Rescue Detailed Form"
         >
           <div className="card card-critical" style={{ padding: '2rem', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer', transition: 'transform 0.2s', background: 'radial-gradient(circle at top right, rgba(239, 68, 68, 0.15), var(--bg-card))' }}>
             <div>
@@ -182,14 +211,14 @@ export const CitizenDashboard: React.FC = () => {
                 <AlertCircle size={32} />
               </div>
               <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fca5a5' }}>
-                REQUEST EMERGENCY RESCUE
+                🚨 REPORT EMERGENCY RESCUE
               </h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', marginTop: '0.5rem' }}>
-                Trapped in flooded house, building collapse, medical trauma, severe life threat. Dispatches Police / NDRF Rescue Teams immediately.
+                Detailed report: Trapped in flooded house, building collapse, medical trauma, severe life threat. Dispatches Police / NDRF Rescue Teams immediately.
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#ef4444', fontWeight: 700, marginTop: '1.5rem' }}>
-              <span>CREATE EMERGENCY SOS</span>
+              <span>OPEN DETAILED FORM</span>
               <ArrowRight size={18} />
             </div>
           </div>

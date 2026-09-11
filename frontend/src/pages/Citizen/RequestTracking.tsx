@@ -33,6 +33,12 @@ export const RequestTracking: React.FC = () => {
     }
   };
 
+  const formatStatusLabel = (status?: string) => {
+    if (!status) return 'Unknown';
+    if (status === 'ACCEPTED') return 'Responder Accepted';
+    return status.replace(/_/g, ' ');
+  };
+
   const steps = [
     { key: 'PENDING', label: 'Logged' },
     { key: 'PRIORITIZED', label: 'Prioritized' },
@@ -142,7 +148,7 @@ export const RequestTracking: React.FC = () => {
                 {request.assigned_to.name}
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                Status: <strong>{request.status.replace(/_/g, ' ')}</strong>
+                Status: <strong>{formatStatusLabel(request.status)}</strong>
               </div>
             </div>
 

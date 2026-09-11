@@ -21,4 +21,10 @@ router.get('/nearby', async (req, res) => {
   res.json({ responders: sorted });
 });
 
+router.patch('/:id/location', async (req, res) => {
+  const { latitude, longitude, is_available } = req.body;
+  const updated = await repository.updateResponderLocation(req.params.id, { latitude, longitude, is_available });
+  res.json({ message: 'Responder location updated successfully', responder: updated });
+});
+
 export default router;
