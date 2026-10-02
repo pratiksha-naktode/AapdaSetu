@@ -1,4 +1,4 @@
-# AI-Powered Disaster Response & Relief Coordination Platform (Varahi)
+# AI-Powered Disaster Response & Relief Coordination Platform (ApdaSetu)
 
 > **Smart India Hackathon 2026 Working Prototype**  
 > A mission-critical, community-powered disaster response and relief coordination platform combining transparent AI-assisted emergency triage, volunteer/resource matching, offline-first request capture, and a GIS-based Command Dashboard.
